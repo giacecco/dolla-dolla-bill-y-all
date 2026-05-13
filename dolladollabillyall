@@ -63,7 +63,7 @@ class TokenLogger:
         self.session_entries = []
 
     def log(self, entry):
-        entry["timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        entry = {**entry, "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
         with self._lock:
             self.session_entries.append(entry)
             with open(self._log_path, "a") as f:
@@ -128,13 +128,14 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
 
             is_gzip = resp.getheader("Content-Encoding", "").lower() == "gzip"
 
-            # Determine if this is a streaming request
-            is_streaming = False
+            # Parse request body once; reuse parsed form downstream.
+            req_data = {}
             if req_body:
                 try:
-                    is_streaming = json.loads(req_body).get("stream", False)
+                    req_data = json.loads(req_body)
                 except json.JSONDecodeError:
                     pass
+            is_streaming = req_data.get("stream", False)
 
             # Relay response status and headers. Never forward
             # Content-Encoding: gzip — the proxy handles decompression
@@ -154,17 +155,17 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
             if is_streaming:
-                self._relay_stream(resp, req_body, is_gzip)
+                self._relay_stream(resp, req_data, is_gzip)
             else:
                 resp_body = resp.read()
                 if is_gzip:
                     resp_body = gzip.decompress(resp_body)
                 self.wfile.write(resp_body)
-                self._extract_usage_nonstream(resp_body, req_body)
+                self._extract_usage_nonstream(resp_body)
         finally:
             conn.close()
 
-    def _relay_stream(self, resp, req_body, is_gzip):
+    def _relay_stream(self, resp, req_data, is_gzip):
         """Relay SSE events chunk by chunk, decompressing if needed."""
         if is_gzip:
             decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
@@ -185,9 +186,9 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(tail)
                 self.wfile.flush()
                 sse_text += tail
-        self._extract_usage_sse(sse_text, req_body)
+        self._extract_usage_sse(sse_text, req_data)
 
-    def _extract_usage_nonstream(self, resp_body, req_body):
+    def _extract_usage_nonstream(self, resp_body):
         try:
             data = json.loads(resp_body)
             usage = data.get("usage")
@@ -204,13 +205,8 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
         except (json.JSONDecodeError, KeyError):
             pass
 
-    def _extract_usage_sse(self, sse_text, req_body):
-        req_model = ""
-        if req_body:
-            try:
-                req_model = json.loads(req_body).get("model", "")
-            except json.JSONDecodeError:
-                pass
+    def _extract_usage_sse(self, sse_text, req_data):
+        req_model = req_data.get("model", "")
 
         best_input = 0
         best_output = 0
