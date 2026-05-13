@@ -15,12 +15,16 @@ Requires Python 3. No pip packages needed — standard library only.
 ## Usage
 
 ```sh
-dolladollabillyall                        # interactive session
+dolladollabillyall                        # interactive session, uses env ANTHROPIC_BASE_URL
 dolladollabillyall -p "explain this PR"   # one-shot, prints token summary to stderr
 dolladollabillyall --model sonnet         # any claude flags are forwarded
+
+# Ollama -- one flag auto-configures everything
+dolladollabillyall -o deepseek-v4-pro:cloud
+dolladollabillyall -o deepseek-v4-pro:cloud -p "explain this"
 ```
 
-The wrapper respects your existing `ANTHROPIC_BASE_URL` — if you use Ollama or another proxy, it automatically detects HTTP vs HTTPS.
+With `-o`/`--ollama-model`, the wrapper automatically sets the upstream to `OLLAMA_HOST` (defaults to `127.0.0.1:11434`), configures Ollama auth, and passes `--model` to claude. Without `-o`, the wrapper respects your existing `ANTHROPIC_BASE_URL` and auto-detects HTTP vs HTTPS.
 
 ## Output
 
@@ -54,4 +58,4 @@ dolladollabillyall
   └─ on exit: prints summary, exits with claude's return code
 ```
 
-Token extraction handles both the Anthropic API (`message_stop` events) and Ollama-compatible APIs (`message_delta` events).
+Token extraction handles the Anthropic API (`message_start` for input tokens, `message_delta` for output tokens), Ollama (`message_delta` for both), and transparently decompresses gzip-encoded responses from both APIs.

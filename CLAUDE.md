@@ -9,18 +9,23 @@ A zero-dependency Python 3 reverse proxy that wraps Claude Code to intercept and
 - `TokenLogger` — thread-safe JSONL writer with in-memory session tracking. Writes to `./token-usage.jsonl`.
 - `ReverseProxyHandler` — `http.server.BaseHTTPRequestHandler` subclass. Forwards any HTTP method to the upstream, relays streaming (SSE) and non-streaming responses chunk-by-chunk, and extracts `usage` from the response.
 - `ReverseProxy` — manages the `ThreadingHTTPServer` lifecycle. Binds to port 0 for auto-selection, passes upstream scheme/netloc to the handler via class attributes.
-- `main()` — reads original `ANTHROPIC_BASE_URL`, starts proxy, runs `claude` via `subprocess.run` with inherited stdio, prints summary to stderr on exit.
+- `parse_args()` — extracts `-o`/`--ollama-model` from argv, returns the model name (or None) and the remaining args for claude.
+- `main()` — parses args, configures upstream (Ollama if `-o` set, otherwise `ANTHROPIC_BASE_URL` or default), starts proxy, runs `claude` via `subprocess.run` with inherited stdio, prints summary to stderr on exit.
 
 ## Token extraction
 
-- Non-streaming: reads full response JSON, looks for `usage.input_tokens` / `usage.output_tokens`.
-- Streaming (SSE): buffers all events, scans `message_stop` and `message_delta` lines for the usage block. Handles both Anthropic and Ollama event formats.
+- Non-streaming: reads full response JSON, decompresses if gzipped, looks for `usage.input_tokens` / `usage.output_tokens`.
+- Streaming (SSE): incrementally decompresses gzip, buffers all events, scans `message_start` (Anthropic input tokens at `message.usage.input_tokens`), `message_delta` (Ollama usage, Anthropic output tokens), and `message_stop` (fallback).
 - Endpoint is cleaned of query strings before logging.
 - Timestamps are ISO 8601 UTC.
 
 ## No dependencies
 
-Uses only Python 3 standard library: `http.server`, `http.client`, `urllib.parse`, `json`, `threading`, `subprocess`, `pathlib`, `signal`.
+Uses only Python 3 standard library: `http.server`, `http.client`, `urllib.parse`, `json`, `threading`, `subprocess`, `pathlib`, `signal`, `gzip`, `zlib`.
+
+## Ollama support
+
+The `-o`/`--ollama-model` flag auto-configures: upstream set to `http://<OLLAMA_HOST>` (default `127.0.0.1:11434`), `ANTHROPIC_AUTH_TOKEN=ollama`, `ANTHROPIC_API_KEY` removed from env, and `--model <model>` prepended to claude args.
 
 ## Conventions
 
