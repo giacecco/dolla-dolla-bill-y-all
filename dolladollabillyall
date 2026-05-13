@@ -330,6 +330,11 @@ def main():
     if ollama_model:
         env["ANTHROPIC_AUTH_TOKEN"] = "ollama"
         env.pop("ANTHROPIC_API_KEY", None)
+    else:
+        # Clear Ollama auth so Claude Code uses its normal keychain/OAuth login
+        if env.get("ANTHROPIC_AUTH_TOKEN") == "ollama":
+            env.pop("ANTHROPIC_AUTH_TOKEN", None)
+            env.pop("ANTHROPIC_API_KEY", None)
 
     # Restore default SIGINT behaviour so Ctrl+C is forwarded to claude naturally.
     # Python installs its own SIGINT handler that raises KeyboardInterrupt;
