@@ -14,8 +14,9 @@ A zero-dependency Python 3 reverse proxy that wraps Claude Code to intercept and
 
 ## Token extraction
 
-- Non-streaming: reads full response JSON, decompresses if gzipped, looks for `usage.input_tokens` / `usage.output_tokens`.
-- Streaming (SSE): incrementally decompresses gzip, buffers all events, scans `message_start` (Anthropic input tokens at `message.usage.input_tokens`), `message_delta` (Ollama usage, Anthropic output tokens), and `message_stop` (fallback).
+- Non-streaming: reads full response JSON, decompresses if gzipped, extracts `usage.input_tokens`, `usage.output_tokens`, `usage.cache_read_input_tokens`, `usage.cache_creation_input_tokens`.
+- Streaming (SSE): incrementally decompresses gzip, buffers all events, scans `message_start` (Anthropic input + cache fields at `message.usage.*`), `message_delta` (Ollama usage, Anthropic output tokens), and `message_stop` (fallback).
+- Prompt caching explains the large token-count difference between Anthropic (cached) and Ollama (uncached). Cache fields appear in the log only when non-zero.
 - Endpoint is cleaned of query strings before logging.
 - Timestamps are ISO 8601 UTC.
 

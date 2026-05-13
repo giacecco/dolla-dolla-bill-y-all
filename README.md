@@ -31,8 +31,10 @@ With `-o`/`--ollama-model`, the wrapper automatically sets the upstream to `OLLA
 Every API call appends a line to `./token-usage.jsonl` in the current working directory (one file per project):
 
 ```json
-{"endpoint": "v1/messages", "input_tokens": 27433, "model": "claude-sonnet-4-6", "output_tokens": 526, "stream": true, "timestamp": "2026-05-13T14:30:00Z"}
+{"endpoint": "v1/messages", "input_tokens": 354, "cache_read_input_tokens": 27123, "model": "claude-opus-4-7", "output_tokens": 42, "stream": true, "timestamp": "2026-05-13T14:30:00Z"}
 ```
+
+`cache_read_input_tokens` and `cache_creation_input_tokens` fields appear when prompt caching is in use (Anthropic API). Ollama has no caching, so its `input_tokens` counts everything — this is why DeepSeek shows 27k tokens and Anthropic shows 354.
 
 Timestamps are ISO 8601 UTC — parseable natively by `datetime.fromisoformat()` (Python), `new Date()` (JavaScript), `time.Parse(time.RFC3339, …)` (Go), etc.
 
@@ -40,10 +42,11 @@ When the session ends, a summary is printed to stderr:
 
 ```
 Session token usage:
-  Requests:  3
-  Input:     82,299 tokens
-  Output:    1,578 tokens
-  Total:     83,877 tokens
+  Requests:     3
+  Input:        1,062 tokens
+  Output:       1,578 tokens
+  Cache read:   81,237 tokens
+  Total:        83,877 tokens
 ```
 
 ## How it works
