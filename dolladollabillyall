@@ -328,8 +328,8 @@ def main():
     env = os.environ.copy()
     env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{proxy.port}"
     if ollama_model:
-        env["ANTHROPIC_API_KEY"] = "ollama"
         env["ANTHROPIC_AUTH_TOKEN"] = "ollama"
+        env.pop("ANTHROPIC_API_KEY", None)
 
     # Restore default SIGINT behaviour so Ctrl+C is forwarded to claude naturally.
     # Python installs its own SIGINT handler that raises KeyboardInterrupt;
