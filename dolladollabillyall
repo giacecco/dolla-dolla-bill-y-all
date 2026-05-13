@@ -155,46 +155,59 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             pass
 
     def _extract_usage_sse(self, sse_text, req_body):
-        try:
-            req_model = ""
-            if req_body:
-                try:
-                    req_model = json.loads(req_body).get("model", "")
-                except json.JSONDecodeError:
-                    pass
+        req_model = ""
+        if req_body:
+            try:
+                req_model = json.loads(req_body).get("model", "")
+            except json.JSONDecodeError:
+                pass
 
-            best_input = 0
-            best_output = 0
-            best_model = req_model
+        best_input = 0
+        best_output = 0
+        best_model = req_model
 
-            for line in sse_text.decode("utf-8", errors="replace").split("\n"):
-                if not line.startswith("data: "):
-                    continue
-                try:
-                    event = json.loads(line[6:])
-                except json.JSONDecodeError:
-                    continue
+        for line in sse_text.decode("utf-8", errors="replace").split("\n"):
+            if not line.startswith("data: "):
+                continue
+            try:
+                event = json.loads(line[6:])
+            except json.JSONDecodeError:
+                continue
 
-                event_type = event.get("type", "")
-                if event_type in ("message_stop", "message_delta"):
-                    usage = event.get("usage")
-                    if usage:
-                        if usage.get("input_tokens", 0) > 0:
-                            best_input = usage["input_tokens"]
-                        if usage.get("output_tokens", 0) > 0:
-                            best_output = usage["output_tokens"]
-                        if event.get("model"):
-                            best_model = event["model"]
+            event_type = event.get("type", "")
 
-            if best_input > 0 or best_output > 0:
-                self._log_token_usage(
-                    model=best_model,
-                    stream=True,
-                    input_tokens=best_input,
-                    output_tokens=best_output,
-                )
-        except Exception:
-            pass
+            if event_type == "message_start":
+                msg = event.get("message", {})
+                usage = msg.get("usage", {})
+                if usage.get("input_tokens", 0) > 0:
+                    best_input = usage["input_tokens"]
+                if msg.get("model"):
+                    best_model = msg["model"]
+
+            elif event_type == "message_delta":
+                usage = event.get("usage", {})
+                if usage.get("output_tokens", 0) > 0:
+                    best_output = usage["output_tokens"]
+                if event.get("model"):
+                    best_model = event["model"]
+
+            elif event_type == "message_stop":
+                usage = event.get("usage", {})
+                if usage:
+                    if usage.get("input_tokens", 0) > 0:
+                        best_input = usage["input_tokens"]
+                    if usage.get("output_tokens", 0) > 0:
+                        best_output = usage["output_tokens"]
+                if event.get("model"):
+                    best_model = event["model"]
+
+        if best_input > 0 or best_output > 0:
+            self._log_token_usage(
+                model=best_model,
+                stream=True,
+                input_tokens=best_input,
+                output_tokens=best_output,
+            )
 
     # Dispatch every HTTP method to the forwarder
     do_GET = lambda self: self._forward("GET")
