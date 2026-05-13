@@ -43,10 +43,12 @@ def parse_args(argv):
     while i < len(argv):
         arg = argv[i]
         if arg in ("-o", "--ollama-model"):
-            if i + 1 < len(argv):
-                ollama_model = argv[i + 1]
-                i += 2
-                continue
+            if i + 1 >= len(argv):
+                print("error: -o/--ollama-model requires a model name", file=sys.stderr)
+                sys.exit(1)
+            ollama_model = argv[i + 1]
+            i += 2
+            continue
         claude_args.append(arg)
         i += 1
     return ollama_model, claude_args
@@ -143,6 +145,10 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                 if low in ("transfer-encoding", "connection", "keep-alive"):
                     continue
                 if low == "content-encoding" and value.lower() == "gzip":
+                    continue
+                # Content-Length reflects the compressed size; drop it when we
+                # decompress so the client does not read a truncated body.
+                if low == "content-length" and is_gzip:
                     continue
                 self.send_header(key, value)
             self.end_headers()
