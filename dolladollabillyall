@@ -91,10 +91,8 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
 
     def _log_token_usage(self, model, stream, input_tokens, output_tokens,
                           cache_read=0, cache_create=0):
-        endpoint = self.path.split("?")[0].lstrip("/")
         entry = {
             "model": model,
-            "endpoint": endpoint,
             "stream": stream,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
