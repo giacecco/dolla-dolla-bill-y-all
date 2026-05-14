@@ -53,6 +53,16 @@ Session token usage:
   Total:        83,877 tokens
 ```
 
+## Reporting
+
+`ddbya-token-report` aggregates `token-usage.jsonl` files across multiple projects.
+
+```sh
+ddbya-token-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD]
+```
+
+If the given folder directly contains a `token-usage.jsonl` file, it reports on that project only. Otherwise it walks subdirectories for `token-usage.jsonl` files. Groups usage by project, model, and programmatic flag, and prints a summary table. Defaults to the last 7 days. `--from` and `--to` can be used together or individually; `--from` without `--to` means "from that date to now". Zero dependencies — Python 3 standard library only.
+
 ## How it works
 
 ```

@@ -32,7 +32,7 @@ Uses only Python 3 standard library: `http.server`, `http.client`, `urllib.parse
 ddbya-token-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD]
 ```
 
-- Walks the given root directory for `token-usage.jsonl` files.
+- If the given folder directly contains `token-usage.jsonl`, reports on that project only. Otherwise walks subdirectories.
 - Project name = immediate parent directory containing the log file.
 - Aggregates by project, model, and programmatic flag.
 - Defaults to last 7 days if no time filter is given.

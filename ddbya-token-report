@@ -68,8 +68,14 @@ def resolve_window(params):
 
 
 def collect_entries(root, from_date, to_date):
+    direct = root / "token-usage.jsonl"
+    if direct.exists():
+        paths = [direct]
+    else:
+        paths = sorted(root.rglob("token-usage.jsonl"))
+
     usage = []
-    for jsonl_path in sorted(root.rglob("token-usage.jsonl")):
+    for jsonl_path in paths:
         project = jsonl_path.parent.name or jsonl_path.parent.resolve().name
         with open(jsonl_path) as f:
             for line in f:
