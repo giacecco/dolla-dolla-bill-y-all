@@ -297,12 +297,14 @@ def parse_args(argv):
         claude_args.append(arg)
         i += 1
 
-    # Validate: --last is required with --limit, and vice versa
     if limit_usd is not None and lookback_days is None:
         print("error: --limit requires --last <days>", file=sys.stderr)
         sys.exit(1)
     if lookback_days is not None and limit_usd is None:
         print("error: --last requires --limit <USD>", file=sys.stderr)
+        sys.exit(1)
+    if limit_usd is not None and ollama_model is not None:
+        print("error: -l/--limit is not supported with -o/--ollama-model", file=sys.stderr)
         sys.exit(1)
 
     return ollama_model, limit_usd, lookback_days, debug, claude_args
@@ -655,10 +657,6 @@ def format_summary(input_tokens, output_tokens, cache_read, cache_create, reques
 
 def main():
     ollama_model, limit_usd, lookback_days, debug, claude_args = parse_args(sys.argv[1:])
-
-    if limit_usd is not None and ollama_model:
-        print("error: -l/--limit is not supported with -o/--ollama-model", file=sys.stderr)
-        sys.exit(1)
 
     if ollama_model:
         ollama_host = os.environ.get("OLLAMA_HOST", OLLAMA_DEFAULT_HOST)
