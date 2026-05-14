@@ -162,8 +162,10 @@ class BudgetChecker:
 
         pct = int(total_cost / self._limit_usd * 100)
 
-        if (pct in {80, 85, 90} or pct >= 95) and pct > self._last_notified_pct:
-            print(f"\nBudget: ${total_cost:.2f} / ${self._limit_usd:.2f} ({pct}%)", file=sys.stderr)
+        # Warn only below 100%; at/above 100% the exceeded message (pre-flight
+        # or watchdog) carries the same info, so the percentage line would duplicate it.
+        if (pct in {80, 85, 90} or 95 <= pct < 100) and pct > self._last_notified_pct:
+            print(f"\nBudget: ${total_cost:.2f} / ${self._limit_usd:.2f} ({pct}%).", file=sys.stderr)
             self._last_notified_pct = pct
 
         if pct >= 100:
