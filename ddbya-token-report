@@ -78,7 +78,10 @@ def collect_entries(root, from_date, to_date):
     if direct.exists():
         paths = [direct]
     else:
-        paths = sorted(root.rglob("token-usage.jsonl"))
+        paths = sorted(
+            p for p in (child / "token-usage.jsonl" for child in root.iterdir() if child.is_dir())
+            if p.exists()
+        )
 
     usage = []
     for jsonl_path in paths:
