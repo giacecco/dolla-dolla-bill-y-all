@@ -3,23 +3,38 @@
 Aggregate token usage across multiple Claude Code projects.
 
 Usage:
-    ddbya-token-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD]
+    ddbya-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD]
 
 Zero dependencies — Python 3 standard library only.
 """
 
 import sys
 import json
-import os
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 from pathlib import Path
+
+# Per-million-token prices in USD, matched by longest model-ID prefix.
+MODEL_PRICING = {
+    "claude-opus-4-7":   {"input": 5,    "output": 25,  "cache_write": 6.25, "cache_read": 0.50},
+    "claude-opus-4-6":   {"input": 5,    "output": 25,  "cache_write": 6.25, "cache_read": 0.50},
+    "claude-opus-4-5":   {"input": 5,    "output": 25,  "cache_write": 6.25, "cache_read": 0.50},
+    "claude-opus-4-1":   {"input": 15,   "output": 75,  "cache_write": 18.75,"cache_read": 1.50},
+    "claude-opus-4":     {"input": 15,   "output": 75,  "cache_write": 18.75,"cache_read": 1.50},
+    "claude-sonnet-4-6": {"input": 3,    "output": 15,  "cache_write": 3.75, "cache_read": 0.30},
+    "claude-sonnet-4-5": {"input": 3,    "output": 15,  "cache_write": 3.75, "cache_read": 0.30},
+    "claude-sonnet-4":   {"input": 3,    "output": 15,  "cache_write": 3.75, "cache_read": 0.30},
+    "claude-haiku-4-5":  {"input": 1,    "output": 5,   "cache_write": 1.25, "cache_read": 0.10},
+    "claude-haiku-3-5":  {"input": 0.80, "output": 4,   "cache_write": 1.0,  "cache_read": 0.08},
+}
+_DEFAULT_PRICING = MODEL_PRICING["claude-sonnet-4-6"]
+_MODEL_PRICING_PREFIXES = sorted(MODEL_PRICING.keys(), key=len, reverse=True)
 
 
 def parse_args():
     args = sys.argv[1:]
     if not args:
-        sys.exit("Usage: ddbya-token-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD]")
+        sys.exit("Usage: ddbya-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD]")
 
     root = Path(args[0])
     if not root.is_dir():
@@ -73,6 +88,27 @@ def resolve_window(params):
     return from_date, to_date
 
 
+def find_pricing(model):
+    for prefix in _MODEL_PRICING_PREFIXES:
+        if model.startswith(prefix):
+            return MODEL_PRICING[prefix]
+    if model.startswith("claude-"):
+        return _DEFAULT_PRICING
+    return None
+
+
+def entry_cost(model, input_tokens, output_tokens, cache_read, cache_create):
+    pricing = find_pricing(model)
+    if pricing is None:
+        return 0.0
+    return (
+        input_tokens  * pricing["input"]
+        + output_tokens * pricing["output"]
+        + cache_read    * pricing["cache_read"]
+        + cache_create  * pricing["cache_write"]
+    ) / 1_000_000
+
+
 def collect_entries(root, from_date, to_date):
     direct = root / "token-usage.jsonl"
     if direct.exists():
@@ -101,14 +137,19 @@ def collect_entries(root, from_date, to_date):
 
                 model = entry.get("model", "unknown")
                 programmatic = "yes" if entry.get("programmatic") else "no"
+                inp = entry.get("input_tokens", 0)
+                out = entry.get("output_tokens", 0)
+                cr = entry.get("cache_read_input_tokens", 0)
+                cc = entry.get("cache_creation_input_tokens", 0)
                 usage.append({
                     "project": project,
                     "model": model,
                     "programmatic": programmatic,
-                    "input_tokens": entry.get("input_tokens", 0),
-                    "output_tokens": entry.get("output_tokens", 0),
-                    "cache_read": entry.get("cache_read_input_tokens", 0),
-                    "cache_create": entry.get("cache_creation_input_tokens", 0),
+                    "input_tokens": inp,
+                    "output_tokens": out,
+                    "cache_read": cr,
+                    "cache_create": cc,
+                    "cost": entry_cost(model, inp, out, cr, cc),
                     "requests": 1,
                 })
     return usage
@@ -116,7 +157,7 @@ def collect_entries(root, from_date, to_date):
 
 def aggregate(entries):
     key = lambda e: (e["project"], e["model"], e["programmatic"])
-    groups = defaultdict(lambda: {"input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_create": 0, "requests": 0})
+    groups = defaultdict(lambda: {"input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_create": 0, "cost": 0.0, "requests": 0})
 
     for e in entries:
         k = key(e)
@@ -125,6 +166,7 @@ def aggregate(entries):
         g["output_tokens"] += e["output_tokens"]
         g["cache_read"] += e["cache_read"]
         g["cache_create"] += e["cache_create"]
+        g["cost"] += e["cost"]
         g["requests"] += e["requests"]
 
     result = []
@@ -142,6 +184,12 @@ def fmt(n):
     if n == 0:
         return "-"
     return f"{n:,}"
+
+
+def fmt_cost(n):
+    if n == 0:
+        return "-"
+    return f"${n:,.2f}"
 
 
 def _col_widths(rows):
@@ -162,6 +210,7 @@ def _col_widths(rows):
     outputs = [fmt(r["output_tokens"]) for r in rows]
     reads = [fmt(r["cache_read"]) for r in rows]
     creates = [fmt(r["cache_create"]) for r in rows]
+    costs = [fmt_cost(r["cost"]) for r in rows]
 
     return [
         ("Project",       lw("Project", projects)),
@@ -172,6 +221,7 @@ def _col_widths(rows):
         ("Output Tokens", rw("Output Tokens", outputs)),
         ("Cache Read",    rw("Cache Read", reads)),
         ("Cache Create",  rw("Cache Create", creates)),
+        ("Cost (USD)",    rw("Cost (USD)", costs)),
     ]
 
 
@@ -202,10 +252,12 @@ def report(rows, from_date, to_date):
 
     last_project = None
     proj_input = proj_output = proj_read = proj_create = proj_reqs = 0
+    proj_cost = 0.0
     tot_input = tot_output = tot_read = tot_create = tot_reqs = 0
+    tot_cost = 0.0
 
     def flush_project():
-        nonlocal proj_input, proj_output, proj_read, proj_create, proj_reqs
+        nonlocal proj_input, proj_output, proj_read, proj_create, proj_reqs, proj_cost
         if last_project is not None and proj_reqs:
             line = ("  " + _cell("(subtotal)", cols[0][1]) + "  " +
                     _cell("", cols[1][1]) + "  " +
@@ -214,10 +266,12 @@ def report(rows, from_date, to_date):
                     _cell(fmt(proj_input), cols[4][1]) + "  " +
                     _cell(fmt(proj_output), cols[5][1]) + "  " +
                     _cell(fmt(proj_read), cols[6][1]) + "  " +
-                    _cell(fmt(proj_create), cols[7][1]))
+                    _cell(fmt(proj_create), cols[7][1]) + "  " +
+                    _cell(fmt_cost(proj_cost), cols[8][1]))
             print(line)
             print()
         proj_input = proj_output = proj_read = proj_create = proj_reqs = 0
+        proj_cost = 0.0
 
     for r in rows:
         if r["project"] != last_project:
@@ -231,7 +285,8 @@ def report(rows, from_date, to_date):
                 _cell(fmt(r["input_tokens"]), cols[4][1]) + "  " +
                 _cell(fmt(r["output_tokens"]), cols[5][1]) + "  " +
                 _cell(fmt(r["cache_read"]), cols[6][1]) + "  " +
-                _cell(fmt(r["cache_create"]), cols[7][1]))
+                _cell(fmt(r["cache_create"]), cols[7][1]) + "  " +
+                _cell(fmt_cost(r["cost"]), cols[8][1]))
         print(line)
 
         proj_input += r["input_tokens"]
@@ -239,12 +294,14 @@ def report(rows, from_date, to_date):
         proj_read += r["cache_read"]
         proj_create += r["cache_create"]
         proj_reqs += r["requests"]
+        proj_cost += r["cost"]
 
         tot_input += r["input_tokens"]
         tot_output += r["output_tokens"]
         tot_read += r["cache_read"]
         tot_create += r["cache_create"]
         tot_reqs += r["requests"]
+        tot_cost += r["cost"]
 
     flush_project()
 
@@ -255,7 +312,8 @@ def report(rows, from_date, to_date):
                   _cell(fmt(tot_input), cols[4][1]) + "  " +
                   _cell(fmt(tot_output), cols[5][1]) + "  " +
                   _cell(fmt(tot_read), cols[6][1]) + "  " +
-                  _cell(fmt(tot_create), cols[7][1]))
+                  _cell(fmt(tot_create), cols[7][1]) + "  " +
+                  _cell(fmt_cost(tot_cost), cols[8][1]))
     print(total_line)
 
 
