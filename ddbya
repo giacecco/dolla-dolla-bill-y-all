@@ -214,15 +214,12 @@ class BudgetChecker:
         if pricing is None:
             return 0.0
 
-        base_input = input_tokens - cache_read - cache_create
-        if base_input < 0:
-            base_input = 0
-
-        cost = 0.0
-        cost += base_input * pricing["input"]
-        cost += output_tokens * pricing["output"]
-        cost += cache_read * pricing["cache_read"]
-        cost += cache_create * pricing["cache_write"]
+        cost = (
+            input_tokens  * pricing["input"]
+            + output_tokens * pricing["output"]
+            + cache_read    * pricing["cache_read"]
+            + cache_create  * pricing["cache_write"]
+        )
         return cost / 1_000_000
 
     def _find_pricing(self, model):
