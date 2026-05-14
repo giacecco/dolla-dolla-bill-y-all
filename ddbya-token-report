@@ -3,7 +3,7 @@
 Aggregate token usage across multiple Claude Code projects.
 
 Usage:
-    token-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD]
+    ddbya-token-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD]
 
 Zero dependencies — Python 3 standard library only.
 """
@@ -19,7 +19,7 @@ from pathlib import Path
 def parse_args():
     args = sys.argv[1:]
     if not args:
-        sys.exit("Usage: token-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD]")
+        sys.exit("Usage: ddbya-token-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD]")
 
     root = Path(args[0])
     if not root.is_dir():
@@ -36,13 +36,21 @@ def parse_args():
                 sys.exit(f"Invalid --last value: {args[i + 1]}")
             i += 2
         elif args[i] == "--from" and i + 1 < len(args):
+            try:
+                datetime.strptime(args[i + 1], "%Y-%m-%d")
+            except ValueError:
+                sys.exit(f"Invalid --from date (expected YYYY-MM-DD): {args[i + 1]}")
             params["from"] = args[i + 1]
             i += 2
         elif args[i] == "--to" and i + 1 < len(args):
+            try:
+                datetime.strptime(args[i + 1], "%Y-%m-%d")
+            except ValueError:
+                sys.exit(f"Invalid --to date (expected YYYY-MM-DD): {args[i + 1]}")
             params["to"] = args[i + 1]
             i += 2
         else:
-            i += 1
+            sys.exit(f"Unknown argument: {args[i]}")
 
     return params
 
@@ -59,10 +67,8 @@ def resolve_window(params):
         from_date = datetime.strptime(params["from"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
     elif params["last"] is not None:
         from_date = now - timedelta(days=params["last"])
-    elif params["last"] is None and not params["from"]:
-        from_date = now - timedelta(days=7)
     else:
-        from_date = datetime.min.replace(tzinfo=timezone.utc)
+        from_date = now - timedelta(days=7)
 
     return from_date, to_date
 
@@ -84,10 +90,9 @@ def collect_entries(root, from_date, to_date):
                     continue
                 try:
                     entry = json.loads(line)
-                except json.JSONDecodeError:
+                    ts = datetime.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                except (json.JSONDecodeError, KeyError, ValueError):
                     continue
-
-                ts = datetime.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
                 if not (from_date <= ts < to_date):
                     continue
 
@@ -136,6 +141,37 @@ def fmt(n):
     return f"{n:,}"
 
 
+def _col_widths(rows):
+    """Compute column widths from data so long values never silently truncate."""
+    extra_labels = ["(subtotal)", "TOTAL"]
+
+    def lw(header, values):
+        return -(max(len(header), max((len(v) for v in values), default=0)))
+
+    def rw(header, values):
+        return max(len(header), max((len(v) for v in values), default=0))
+
+    projects = [r["project"] for r in rows] + extra_labels
+    models = [r["model"] for r in rows] + [""]
+    programmatic = [r["programmatic"] for r in rows] + [""]
+    reqs = [fmt(r["requests"]) for r in rows]
+    inputs = [fmt(r["input_tokens"]) for r in rows]
+    outputs = [fmt(r["output_tokens"]) for r in rows]
+    reads = [fmt(r["cache_read"]) for r in rows]
+    creates = [fmt(r["cache_create"]) for r in rows]
+
+    return [
+        ("Project",       lw("Project", projects)),
+        ("Model",         lw("Model", models)),
+        ("Programmatic",  lw("Programmatic", programmatic)),
+        ("Reqs",          rw("Reqs", reqs)),
+        ("Input Tokens",  rw("Input Tokens", inputs)),
+        ("Output Tokens", rw("Output Tokens", outputs)),
+        ("Cache Read",    rw("Cache Read", reads)),
+        ("Cache Create",  rw("Cache Create", creates)),
+    ]
+
+
 def report(rows, from_date, to_date):
     to_display = to_date - timedelta(days=1)
     if (to_display - from_date).days <= 1:
@@ -149,16 +185,7 @@ def report(rows, from_date, to_date):
         print("No usage data found.")
         return
 
-    cols = [
-        ("Project",        -26),
-        ("Model",          -24),
-        ("Programmatic",   -14),
-        ("Reqs",            6),
-        ("Input Tokens",   17),
-        ("Output Tokens",  17),
-        ("Cache Read",     17),
-        ("Cache Create",   17),
-    ]
+    cols = _col_widths(rows)
 
     def _cell(value, width):
         """Format a table cell. Negative width = left-aligned, positive = right-aligned."""
