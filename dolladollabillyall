@@ -86,6 +86,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
     upstream_scheme = "https"
     upstream_netloc = "api.anthropic.com"
     token_logger = None
+    programmatic = False
 
     # Suppress http.server's default request logging
     def log_message(self, format, *args):
@@ -99,6 +100,8 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
         }
+        if self.programmatic:
+            entry["programmatic"] = True
         if cache_read:
             entry["cache_read_input_tokens"] = cache_read
         if cache_create:
@@ -274,7 +277,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
 class ReverseProxy:
     """Manages the lifecycle of the reverse proxy HTTP server."""
 
-    def __init__(self, upstream_url):
+    def __init__(self, upstream_url, programmatic=False):
         parsed = urllib.parse.urlparse(upstream_url)
         if parsed.scheme and parsed.netloc:
             self.upstream_scheme = parsed.scheme
@@ -284,6 +287,7 @@ class ReverseProxy:
             self.upstream_scheme = default.scheme
             self.upstream_netloc = default.netloc
 
+        self.programmatic = programmatic
         self.token_logger = TokenLogger(TOKEN_LOG_FILE)
         self._server = None
         self._thread = None
@@ -307,6 +311,7 @@ class ReverseProxy:
         token_logger = self.token_logger
         upstream_scheme = self.upstream_scheme
         upstream_netloc = self.upstream_netloc
+        programmatic = self.programmatic
 
         class BoundHandler(ReverseProxyHandler):
             pass
@@ -314,6 +319,7 @@ class ReverseProxy:
         BoundHandler.token_logger = token_logger
         BoundHandler.upstream_scheme = upstream_scheme
         BoundHandler.upstream_netloc = upstream_netloc
+        BoundHandler.programmatic = programmatic
         return BoundHandler
 
 
@@ -343,7 +349,9 @@ def main():
     else:
         upstream = os.environ.get("ANTHROPIC_BASE_URL", DEFAULT_UPSTREAM)
 
-    proxy = ReverseProxy(upstream)
+    programmatic = any(arg in ("-p", "--print") for arg in claude_args)
+
+    proxy = ReverseProxy(upstream, programmatic=programmatic)
     proxy.start()
 
     env = os.environ.copy()
