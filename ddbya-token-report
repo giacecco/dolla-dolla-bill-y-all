@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""
+Aggregate token usage across multiple Claude Code projects.
+
+Usage:
+    token-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD]
+
+Zero dependencies — Python 3 standard library only.
+"""
+
+import sys
+import json
+import os
+from datetime import datetime, timezone, timedelta
+from collections import defaultdict
+from pathlib import Path
+
+
+def parse_args():
+    args = sys.argv[1:]
+    if not args:
+        sys.exit("Usage: token-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD]")
+
+    root = Path(args[0])
+    if not root.is_dir():
+        sys.exit(f"Not a directory: {root}")
+
+    params = {"root": root, "last": None, "from": None, "to": None}
+
+    i = 1
+    while i < len(args):
+        if args[i] == "--last" and i + 1 < len(args):
+            try:
+                params["last"] = int(args[i + 1])
+            except ValueError:
+                sys.exit(f"Invalid --last value: {args[i + 1]}")
+            i += 2
+        elif args[i] == "--from" and i + 1 < len(args):
+            params["from"] = args[i + 1]
+            i += 2
+        elif args[i] == "--to" and i + 1 < len(args):
+            params["to"] = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    return params
+
+
+def resolve_window(params):
+    now = datetime.now(timezone.utc)
+
+    if params["to"]:
+        to_date = datetime.strptime(params["to"], "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
+    else:
+        to_date = now
+
+    if params["from"]:
+        from_date = datetime.strptime(params["from"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    elif params["last"] is not None:
+        from_date = now - timedelta(days=params["last"])
+    elif params["last"] is None and not params["from"]:
+        from_date = now - timedelta(days=7)
+    else:
+        from_date = datetime.min.replace(tzinfo=timezone.utc)
+
+    return from_date, to_date
+
+
+def collect_entries(root, from_date, to_date):
+    usage = []
+    for jsonl_path in sorted(root.rglob("token-usage.jsonl")):
+        project = jsonl_path.parent.name or jsonl_path.parent.resolve().name
+        with open(jsonl_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                ts = datetime.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                if not (from_date <= ts < to_date):
+                    continue
+
+                model = entry.get("model", "unknown")
+                programmatic = "yes" if entry.get("programmatic") else "no"
+                usage.append({
+                    "project": project,
+                    "model": model,
+                    "programmatic": programmatic,
+                    "input_tokens": entry.get("input_tokens", 0),
+                    "output_tokens": entry.get("output_tokens", 0),
+                    "cache_read": entry.get("cache_read_input_tokens", 0),
+                    "cache_create": entry.get("cache_creation_input_tokens", 0),
+                    "requests": 1,
+                })
+    return usage
+
+
+def aggregate(entries):
+    key = lambda e: (e["project"], e["model"], e["programmatic"])
+    groups = defaultdict(lambda: {"input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_create": 0, "requests": 0})
+
+    for e in entries:
+        k = key(e)
+        g = groups[k]
+        g["input_tokens"] += e["input_tokens"]
+        g["output_tokens"] += e["output_tokens"]
+        g["cache_read"] += e["cache_read"]
+        g["cache_create"] += e["cache_create"]
+        g["requests"] += e["requests"]
+
+    result = []
+    for (project, model, programmatic), g in sorted(groups.items()):
+        result.append({
+            "project": project,
+            "model": model,
+            "programmatic": programmatic,
+            **g,
+        })
+    return result
+
+
+def fmt(n):
+    if n == 0:
+        return "-"
+    return f"{n:,}"
+
+
+def report(rows, from_date, to_date):
+    to_display = to_date - timedelta(days=1)
+    if (to_display - from_date).days <= 1:
+        header = f"Token Usage Report — {from_date.strftime('%Y-%m-%d')}"
+    else:
+        header = f"Token Usage Report — {from_date.strftime('%Y-%m-%d')} to {to_display.strftime('%Y-%m-%d')}"
+    print(header)
+    print()
+
+    if not rows:
+        print("No usage data found.")
+        return
+
+    cols = [
+        ("Project",        -26),
+        ("Model",          -24),
+        ("Programmatic",   -14),
+        ("Reqs",            6),
+        ("Input Tokens",   17),
+        ("Output Tokens",  17),
+        ("Cache Read",     17),
+        ("Cache Create",   17),
+    ]
+
+    def _cell(value, width):
+        """Format a table cell. Negative width = left-aligned, positive = right-aligned."""
+        if width < 0:
+            return f"{value:<{-width}}"
+        return f"{value:>{width}}"
+
+    header_line = "  ".join(_cell(label, width) for label, width in cols)
+    print(header_line)
+    print("  ".join("─" * abs(w) for _, w in cols))
+
+    last_project = None
+    proj_input = proj_output = proj_read = proj_create = proj_reqs = 0
+    tot_input = tot_output = tot_read = tot_create = tot_reqs = 0
+
+    def flush_project():
+        nonlocal proj_input, proj_output, proj_read, proj_create, proj_reqs
+        if last_project is not None and proj_reqs:
+            line = ("  " + _cell("(subtotal)", cols[0][1]) + "  " +
+                    _cell("", cols[1][1]) + "  " +
+                    _cell("", cols[2][1]) + "  " +
+                    _cell(fmt(proj_reqs), cols[3][1]) + "  " +
+                    _cell(fmt(proj_input), cols[4][1]) + "  " +
+                    _cell(fmt(proj_output), cols[5][1]) + "  " +
+                    _cell(fmt(proj_read), cols[6][1]) + "  " +
+                    _cell(fmt(proj_create), cols[7][1]))
+            print(line)
+            print()
+        proj_input = proj_output = proj_read = proj_create = proj_reqs = 0
+
+    for r in rows:
+        if r["project"] != last_project:
+            flush_project()
+            last_project = r["project"]
+
+        line = ("  " + _cell(r["project"], cols[0][1]) + "  " +
+                _cell(r["model"], cols[1][1]) + "  " +
+                _cell(r["programmatic"], cols[2][1]) + "  " +
+                _cell(fmt(r["requests"]), cols[3][1]) + "  " +
+                _cell(fmt(r["input_tokens"]), cols[4][1]) + "  " +
+                _cell(fmt(r["output_tokens"]), cols[5][1]) + "  " +
+                _cell(fmt(r["cache_read"]), cols[6][1]) + "  " +
+                _cell(fmt(r["cache_create"]), cols[7][1]))
+        print(line)
+
+        proj_input += r["input_tokens"]
+        proj_output += r["output_tokens"]
+        proj_read += r["cache_read"]
+        proj_create += r["cache_create"]
+        proj_reqs += r["requests"]
+
+        tot_input += r["input_tokens"]
+        tot_output += r["output_tokens"]
+        tot_read += r["cache_read"]
+        tot_create += r["cache_create"]
+        tot_reqs += r["requests"]
+
+    flush_project()
+
+    total_line = ("  " + _cell("TOTAL", cols[0][1]) + "  " +
+                  _cell("", cols[1][1]) + "  " +
+                  _cell("", cols[2][1]) + "  " +
+                  _cell(fmt(tot_reqs), cols[3][1]) + "  " +
+                  _cell(fmt(tot_input), cols[4][1]) + "  " +
+                  _cell(fmt(tot_output), cols[5][1]) + "  " +
+                  _cell(fmt(tot_read), cols[6][1]) + "  " +
+                  _cell(fmt(tot_create), cols[7][1]))
+    print(total_line)
+
+
+def main():
+    params = parse_args()
+    from_date, to_date = resolve_window(params)
+    entries = collect_entries(params["root"], from_date, to_date)
+    rows = aggregate(entries)
+    report(rows, from_date, to_date)
+
+
+if __name__ == "__main__":
+    main()

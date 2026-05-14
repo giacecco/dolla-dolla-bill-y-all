@@ -9,7 +9,7 @@ dolla-dolla-bill-y-all is a zero-dependency reverse proxy that intercepts Claude
 ```sh
 # clone and link into your PATH
 git clone https://github.com/giacecco/dolla-dolla-bill-y-all.git
-ln -s "$(pwd)/dolla-dolla-bill-y-all/dolladollabillyall" /usr/local/bin/dolladollabillyall
+ln -s "$(pwd)/dolla-dolla-bill-y-all/ddbya" /usr/local/bin/ddbya
 ```
 
 Requires Python 3. No pip packages needed — standard library only.
@@ -17,13 +17,13 @@ Requires Python 3. No pip packages needed — standard library only.
 ## Usage
 
 ```sh
-dolladollabillyall                        # interactive session, uses env ANTHROPIC_BASE_URL
-dolladollabillyall -p "explain this PR"   # one-shot, prints token summary to stderr
-dolladollabillyall --model sonnet         # any claude flags are forwarded
+ddbya                        # interactive session, uses env ANTHROPIC_BASE_URL
+ddbya -p "explain this PR"   # one-shot, prints token summary to stderr
+ddbya --model sonnet         # any claude flags are forwarded
 
 # Ollama -- one flag auto-configures everything
-dolladollabillyall -o deepseek-v4-pro:cloud
-dolladollabillyall -o deepseek-v4-pro:cloud -p "explain this"
+ddbya -o deepseek-v4-pro:cloud
+ddbya -o deepseek-v4-pro:cloud -p "explain this"
 ```
 
 With `-o`/`--ollama-model`, the wrapper automatically sets the upstream to `OLLAMA_HOST` (defaults to `127.0.0.1:11434`), configures Ollama auth, and passes `--model` to claude. Without `-o`, the wrapper respects your existing `ANTHROPIC_BASE_URL` and auto-detects HTTP vs HTTPS.
@@ -56,7 +56,7 @@ Session token usage:
 ## How it works
 
 ```
-dolladollabillyall
+ddbya
   ├─ starts local reverse proxy on 127.0.0.1:<random-port>
   ├─ sets ANTHROPIC_BASE_URL=http://127.0.0.1:<port>
   ├─ runs claude (all args forwarded)

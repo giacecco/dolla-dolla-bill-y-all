@@ -2,7 +2,7 @@
 
 ## Project
 
-A zero-dependency Python 3 reverse proxy that wraps Claude Code to intercept and log Anthropic API token usage. Single file: `dolladollabillyall`.
+A zero-dependency Python 3 reverse proxy that wraps Claude Code to intercept and log Anthropic API token usage. Single file: `ddbya`. Reporting script: `ddbya-token-report`.
 
 ## Architecture
 
@@ -23,6 +23,21 @@ A zero-dependency Python 3 reverse proxy that wraps Claude Code to intercept and
 ## No dependencies
 
 Uses only Python 3 standard library: `http.server`, `http.client`, `urllib.parse`, `json`, `threading`, `subprocess`, `pathlib`, `signal`, `gzip`, `zlib`.
+
+## Reporting
+
+`ddbya-token-report` aggregates `token-usage.jsonl` files across multiple projects.
+
+```
+ddbya-token-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD]
+```
+
+- Walks the given root directory for `token-usage.jsonl` files.
+- Project name = immediate parent directory containing the log file.
+- Aggregates by project, model, and programmatic flag.
+- Defaults to last 7 days if no time filter is given.
+- `--from`/`--to` can be used together or individually; `--from` without `--to` means "from that date to now".
+- Zero dependencies — Python 3 standard library only.
 
 ## Ollama support
 

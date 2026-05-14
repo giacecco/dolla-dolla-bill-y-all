@@ -4,8 +4,8 @@ Reverse proxy wrapper for Claude Code that intercepts and logs token consumption
 Zero dependencies — Python 3 standard library only.
 
 Usage:
-    dolladollabillyall [claude args...]
-    dolladollabillyall -o <ollama-model> [claude args...]
+    ddbya [claude args...]
+    ddbya -o <ollama-model> [claude args...]
 
 Options:
     -o, --ollama-model <model>  Route through Ollama with the given model.
