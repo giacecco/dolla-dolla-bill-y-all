@@ -65,7 +65,7 @@ class BudgetChecker:
     """Periodically scans token-usage.jsonl across sibling projects to enforce a budget."""
 
     def __init__(self, limit_usd, lookback_days, project_dir,
-                 check_interval=300, on_exceeded=None):
+                 check_interval=60, on_exceeded=None):
         self._limit_usd = limit_usd
         self._lookback = timedelta(days=lookback_days)
         self._project_dir = Path(project_dir).resolve()
