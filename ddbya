@@ -81,6 +81,11 @@ class BudgetChecker:
         self._running = False
         self._thread = None
         self._first_check_done = threading.Event()
+        # Per-file cache: avoids re-reading entire JSONL logs every tick.
+        # path -> {"mtime": float, "offset": int, "entries": [(datetime, float)]}.
+        # Only newly-appended bytes are read; old entries are pruned once they
+        # fall outside the budget window.
+        self._file_cache = {}
 
     def start(self):
         self._running = True
@@ -120,12 +125,12 @@ class BudgetChecker:
         now = datetime.now(timezone.utc)
         since = now - self._lookback
 
-        total_cost = 0.0
+        log_files = []
 
         # Current project
         log_file = self._project_dir / TOKEN_LOG_FILE
         if log_file.exists():
-            total_cost += self._cost_from_file(log_file, since)
+            log_files.append(log_file)
 
         # Sibling projects in the parent directory
         if self._parent_dir.exists():
@@ -133,11 +138,21 @@ class BudgetChecker:
                 for entry in self._parent_dir.iterdir():
                     if not entry.is_dir() or entry.resolve() == self._project_dir:
                         continue
-                    log_file = entry / TOKEN_LOG_FILE
-                    if log_file.exists():
-                        total_cost += self._cost_from_file(log_file, since)
+                    sibling_log = entry / TOKEN_LOG_FILE
+                    if sibling_log.exists():
+                        log_files.append(sibling_log)
             except PermissionError:
                 pass
+
+        total_cost = 0.0
+        for f in log_files:
+            total_cost += self._cost_from_file(f, since)
+
+        # Drop cache entries for files that have vanished since the last tick.
+        live = set(log_files)
+        for path in list(self._file_cache):
+            if path not in live:
+                del self._file_cache[path]
 
         with self._lock:
             self._current_cost = total_cost
@@ -164,28 +179,60 @@ class BudgetChecker:
                     pass
 
     def _cost_from_file(self, filepath, since):
-        cost = 0.0
         try:
-            with open(filepath, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    ts = entry.get("timestamp", "").replace("Z", "+00:00")
-                    try:
-                        entry_time = datetime.fromisoformat(ts)
-                    except (ValueError, TypeError):
-                        continue
-                    if entry_time < since:
-                        continue
-                    cost += self._entry_cost(entry)
-        except (OSError, PermissionError):
-            pass
-        return cost
+            st = filepath.stat()
+        except OSError:
+            return 0.0
+
+        cache = self._file_cache.get(filepath)
+        if cache is None:
+            cache = {"mtime": 0.0, "offset": 0, "entries": []}
+            self._file_cache[filepath] = cache
+
+        # File rotated or truncated — discard cached state and start over.
+        if st.st_size < cache["offset"]:
+            cache["offset"] = 0
+            cache["entries"] = []
+            cache["mtime"] = 0.0
+
+        if st.st_size > cache["offset"] or st.st_mtime != cache["mtime"]:
+            try:
+                with open(filepath, "rb") as f:
+                    f.seek(cache["offset"])
+                    while True:
+                        line = f.readline()
+                        if not line:
+                            break
+                        if not line.endswith(b"\n"):
+                            # Partial write at EOF — leave it for the next tick.
+                            f.seek(-len(line), 1)
+                            break
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        ts_raw = entry.get("timestamp", "")
+                        if not isinstance(ts_raw, str):
+                            continue
+                        try:
+                            entry_time = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                        except ValueError:
+                            continue
+                        cache["entries"].append((entry_time, self._entry_cost(entry)))
+                    cache["offset"] = f.tell()
+                cache["mtime"] = st.st_mtime
+            except OSError:
+                return 0.0
+
+        # Sum within window; prune anything older so the cache stays bounded.
+        total = 0.0
+        keep = []
+        for ts, cost in cache["entries"]:
+            if ts >= since:
+                total += cost
+                keep.append((ts, cost))
+        cache["entries"] = keep
+        return total
 
     def _entry_cost(self, entry):
         model = entry.get("model", "")
@@ -208,19 +255,22 @@ class BudgetChecker:
 
     def _find_pricing(self, model):
         for prefix in _MODEL_PRICING_PREFIXES:
-            if model.startswith(prefix):
+            if model == prefix or model.startswith(prefix + "-"):
                 return MODEL_PRICING[prefix]
         if model.startswith("claude-"):
+            should_warn = False
             with self._lock:
                 self._unknown_models.add(model)
                 if model not in self._warned_models:
                     self._warned_models.add(model)
-                    print(
-                        f"\nUnrecognised Claude model '{model}' — session will finish but ddbya will then exit.\n"
-                        f"Download the latest version:\n"
-                        f"  curl -o ddbya https://raw.githubusercontent.com/giacecco/dolla-dolla-bill-y-all/main/ddbya",
-                        file=sys.stderr,
-                    )
+                    should_warn = True
+            if should_warn:
+                print(
+                    f"\nUnrecognised Claude model '{model}' — session will finish but ddbya will then exit.\n"
+                    f"Download the latest version:\n"
+                    f"  curl -o ddbya https://raw.githubusercontent.com/giacecco/dolla-dolla-bill-y-all/main/ddbya",
+                    file=sys.stderr,
+                )
             return _DEFAULT_PRICING
         return None
 
@@ -235,6 +285,9 @@ def parse_args(argv):
     while i < len(argv):
         arg = argv[i]
         if arg in ("-o", "--ollama-model"):
+            if ollama_model is not None:
+                print("error: -o/--ollama-model given more than once", file=sys.stderr)
+                sys.exit(1)
             if i + 1 >= len(argv):
                 print("error: -o/--ollama-model requires a model name", file=sys.stderr)
                 sys.exit(1)
@@ -246,6 +299,9 @@ def parse_args(argv):
             i += 2
             continue
         elif arg in ("-l", "--limit"):
+            if limit_usd is not None:
+                print("error: -l/--limit given more than once", file=sys.stderr)
+                sys.exit(1)
             if i + 1 >= len(argv):
                 print("error: -l/--limit requires a USD amount", file=sys.stderr)
                 sys.exit(1)
@@ -260,6 +316,9 @@ def parse_args(argv):
             i += 2
             continue
         elif arg == "--last":
+            if lookback_days is not None:
+                print("error: --last given more than once", file=sys.stderr)
+                sys.exit(1)
             if i + 1 >= len(argv):
                 print("error: --last requires a number of days", file=sys.stderr)
                 sys.exit(1)
@@ -289,6 +348,40 @@ def parse_args(argv):
     return ollama_model, limit_usd, lookback_days, claude_args
 
 
+# Claude CLI flags that consume the next argv token as their value. Used by
+# is_programmatic_invocation to avoid misreading "-p"/"--print" when it appears
+# as the value of a preceding flag (e.g. --model -p).
+_CLAUDE_VALUE_FLAGS = frozenset({
+    "--model",
+    "--add-dir",
+    "--allowedTools",
+    "--disallowedTools",
+    "--mcp-config",
+    "--append-system-prompt",
+    "--permission-mode",
+    "--permission-prompt-tool",
+    "--session-id",
+    "--agents",
+    "--setting-sources",
+    "--input-format",
+    "--output-format",
+})
+
+
+def is_programmatic_invocation(claude_args):
+    """True if -p/--print appears as a flag (not as the value of another flag)."""
+    skip_next = False
+    for arg in claude_args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in ("-p", "--print"):
+            return True
+        if arg in _CLAUDE_VALUE_FLAGS:
+            skip_next = True
+    return False
+
+
 class TokenLogger:
     """Writes token usage to a project-local JSONL file and tracks session totals."""
 
@@ -296,13 +389,19 @@ class TokenLogger:
         self._log_path = Path(log_path)
         self._lock = threading.Lock()
         self.session_entries = []
+        self._file = open(self._log_path, "a")
 
     def log(self, entry):
         entry = {**entry, "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
         with self._lock:
             self.session_entries.append(entry)
-            with open(self._log_path, "a") as f:
-                f.write(json.dumps(entry, sort_keys=True) + "\n")
+            self._file.write(json.dumps(entry, sort_keys=True) + "\n")
+            self._file.flush()
+
+    def close(self):
+        with self._lock:
+            if self._file is not None and not self._file.closed:
+                self._file.close()
 
     def summary(self):
         with self._lock:
@@ -426,9 +525,11 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                     continue
                 if low == "content-encoding" and value.lower() == "gzip":
                     continue
-                # Content-Length reflects the compressed size; drop it when we
-                # decompress so the client does not read a truncated body.
-                if low == "content-length" and is_gzip:
+                # Drop Content-Length when we will not deliver the exact same
+                # byte count: gzip is decompressed by us, and streaming responses
+                # are relayed chunk-by-chunk so the original length no longer
+                # matches what the client receives.
+                if low == "content-length" and (is_gzip or is_streaming):
                     continue
                 self.send_header(key, value)
             self.end_headers()
@@ -487,6 +588,10 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                 if event.get("model"):
                     best_model = event["model"]
 
+        # Track whether the client is still reading. A disconnect mid-stream
+        # should not crash the handler; keep parsing usage from upstream so the
+        # session totals are still logged.
+        client_alive = True
         pending = b""
         while True:
             chunk = resp.read(4096)
@@ -494,8 +599,12 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                 break
             if is_gzip:
                 chunk = decompressor.decompress(chunk)
-            self.wfile.write(chunk)
-            self.wfile.flush()
+            if client_alive:
+                try:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                except OSError:
+                    client_alive = False
             pending += chunk
             while b"\n" in pending:
                 raw_line, pending = pending.split(b"\n", 1)
@@ -504,8 +613,12 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
         if is_gzip:
             tail = decompressor.flush()
             if tail:
-                self.wfile.write(tail)
-                self.wfile.flush()
+                if client_alive:
+                    try:
+                        self.wfile.write(tail)
+                        self.wfile.flush()
+                    except OSError:
+                        client_alive = False
                 pending += tail
 
         if pending:
@@ -535,7 +648,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                 cache_read=usage.get("cache_read_input_tokens", 0),
                 cache_create=usage.get("cache_creation_input_tokens", 0),
             )
-        except (json.JSONDecodeError, KeyError):
+        except json.JSONDecodeError:
             pass
 
     # Dispatch every HTTP method to the forwarder
@@ -644,7 +757,7 @@ def main():
     else:
         upstream = os.environ.get("ANTHROPIC_BASE_URL", DEFAULT_UPSTREAM)
 
-    programmatic = any(arg in ("-p", "--print") for arg in claude_args)
+    programmatic = is_programmatic_invocation(claude_args)
 
     proxy = ReverseProxy(upstream, programmatic=programmatic)
     proxy.start()
@@ -697,13 +810,26 @@ def main():
     # restoring SIG_DFL lets the claude subprocess receive the signal directly.
     original_sigint = signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-    proc = subprocess.Popen(
-        ["claude"] + claude_args,
-        env=env,
-        stdin=sys.stdin,
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-    )
+    try:
+        proc = subprocess.Popen(
+            ["claude"] + claude_args,
+            env=env,
+            stdin=sys.stdin,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+    except FileNotFoundError:
+        signal.signal(signal.SIGINT, original_sigint)
+        if budget_checker:
+            budget_checker.stop()
+        proxy.stop()
+        proxy.token_logger.close()
+        print(
+            "error: 'claude' executable not found on PATH. "
+            "Install Claude Code (https://claude.com/claude-code) and try again.",
+            file=sys.stderr,
+        )
+        sys.exit(127)
 
     if budget_checker is not None:
         def _watchdog():
@@ -736,6 +862,7 @@ def main():
         if budget_checker:
             budget_checker.stop()
         proxy.stop()
+        proxy.token_logger.close()
 
     input_tokens, output_tokens, cache_read, cache_create, request_count = proxy.token_logger.summary()
     if request_count > 0:

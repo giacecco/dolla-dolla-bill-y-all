@@ -10,25 +10,29 @@ Zero dependencies — Python 3 standard library only.
 
 import sys
 import json
+import importlib.util
+import importlib.machinery
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 from pathlib import Path
 
-# Per-million-token prices in USD, matched by longest model-ID prefix.
-MODEL_PRICING = {
-    "claude-opus-4-7":   {"input": 5,    "output": 25,  "cache_write": 6.25, "cache_read": 0.50},
-    "claude-opus-4-6":   {"input": 5,    "output": 25,  "cache_write": 6.25, "cache_read": 0.50},
-    "claude-opus-4-5":   {"input": 5,    "output": 25,  "cache_write": 6.25, "cache_read": 0.50},
-    "claude-opus-4-1":   {"input": 15,   "output": 75,  "cache_write": 18.75,"cache_read": 1.50},
-    "claude-opus-4":     {"input": 15,   "output": 75,  "cache_write": 18.75,"cache_read": 1.50},
-    "claude-sonnet-4-6": {"input": 3,    "output": 15,  "cache_write": 3.75, "cache_read": 0.30},
-    "claude-sonnet-4-5": {"input": 3,    "output": 15,  "cache_write": 3.75, "cache_read": 0.30},
-    "claude-sonnet-4":   {"input": 3,    "output": 15,  "cache_write": 3.75, "cache_read": 0.30},
-    "claude-haiku-4-5":  {"input": 1,    "output": 5,   "cache_write": 1.25, "cache_read": 0.10},
-    "claude-haiku-3-5":  {"input": 0.80, "output": 4,   "cache_write": 1.0,  "cache_read": 0.08},
-}
-_DEFAULT_PRICING = MODEL_PRICING["claude-sonnet-4-6"]
-_MODEL_PRICING_PREFIXES = sorted(MODEL_PRICING.keys(), key=len, reverse=True)
+
+def _load_pricing_from_ddbya():
+    """Pricing lives in ddbya; load it from the sibling file so the two scripts can't drift."""
+    ddbya_path = Path(__file__).resolve().parent / "ddbya"
+    if not ddbya_path.is_file():
+        sys.exit(
+            f"ddbya-report: cannot find sibling 'ddbya' at {ddbya_path}.\n"
+            f"ddbya-report sources pricing from ddbya; install them in the same directory."
+        )
+    loader = importlib.machinery.SourceFileLoader("_ddbya_pricing", str(ddbya_path))
+    spec = importlib.util.spec_from_loader("_ddbya_pricing", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module.MODEL_PRICING, module._DEFAULT_PRICING, module._MODEL_PRICING_PREFIXES
+
+
+MODEL_PRICING, _DEFAULT_PRICING, _MODEL_PRICING_PREFIXES = _load_pricing_from_ddbya()
 
 
 def parse_args():
@@ -90,7 +94,7 @@ def resolve_window(params):
 
 def find_pricing(model):
     for prefix in _MODEL_PRICING_PREFIXES:
-        if model.startswith(prefix):
+        if model == prefix or model.startswith(prefix + "-"):
             return MODEL_PRICING[prefix]
     if model.startswith("claude-"):
         return _DEFAULT_PRICING
@@ -227,7 +231,7 @@ def _col_widths(rows):
 
 def report(rows, from_date, to_date):
     to_display = to_date - timedelta(days=1)
-    if (to_display - from_date).days <= 1:
+    if (to_display - from_date).days < 1:
         header = f"Token Usage Report — {from_date.strftime('%Y-%m-%d')}"
     else:
         header = f"Token Usage Report — {from_date.strftime('%Y-%m-%d')} to {to_display.strftime('%Y-%m-%d')}"
