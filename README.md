@@ -43,8 +43,6 @@ Behaviour:
 - **Unrecognised models:** if your `token-usage.jsonl` history mentions a Claude model ddbya doesn't know about (e.g. a release newer than this copy), ddbya warns, falls back to Sonnet pricing as an approximation, and exits with status 1 at the end of the session.
 - **Not supported with `-o`/`--ollama-model`** (no public pricing for arbitrary Ollama models).
 
-`--debug` adds a `[debug]` line to stderr each minute showing the current computed spend.
-
 ## Output
 
 Every API call appends a line to `./token-usage.jsonl` in the current working directory (one file per project):

@@ -64,14 +64,13 @@ _MODEL_PRICING_PREFIXES = sorted(MODEL_PRICING.keys(), key=len, reverse=True)
 class BudgetChecker:
     """Periodically scans token-usage.jsonl across sibling projects to enforce a budget."""
 
-    def __init__(self, limit_usd, lookback_days, project_dir, debug=False,
+    def __init__(self, limit_usd, lookback_days, project_dir,
                  check_interval=300, on_exceeded=None):
         self._limit_usd = limit_usd
         self._lookback = timedelta(days=lookback_days)
         self._project_dir = Path(project_dir).resolve()
         self._parent_dir = self._project_dir.parent
         self._check_interval = check_interval
-        self._debug = debug
         self._on_exceeded = on_exceeded
         self._lock = threading.Lock()
         self._current_cost = 0.0
@@ -113,18 +112,9 @@ class BudgetChecker:
         self._check()
         self._first_check_done.set()
         while self._running:
-            # Sleep in 60s slices so debug prints stay timely
-            elapsed = 0
-            while elapsed < self._check_interval and self._running:
-                time.sleep(60)
-                elapsed += 60
-                if self._debug and self._running:
-                    with self._lock:
-                        cost = self._current_cost
-                    print(f"[debug] current spend: ${cost:.4f}", file=sys.stderr)
-            if not self._running:
-                break
-            self._check()
+            time.sleep(self._check_interval)
+            if self._running:
+                self._check()
 
     def _check(self):
         now = datetime.now(timezone.utc)
@@ -236,11 +226,10 @@ class BudgetChecker:
 
 
 def parse_args(argv):
-    """Extract wrapper-specific flags, return (ollama_model_or_none, limit_usd_or_none, lookback_days_or_none, debug, remaining_args_for_claude)."""
+    """Extract wrapper-specific flags, return (ollama_model_or_none, limit_usd_or_none, lookback_days_or_none, remaining_args_for_claude)."""
     ollama_model = None
     limit_usd = None
     lookback_days = None
-    debug = False
     claude_args = []
     i = 0
     while i < len(argv):
@@ -284,10 +273,6 @@ def parse_args(argv):
                 sys.exit(1)
             i += 2
             continue
-        elif arg == "--debug":
-            debug = True
-            i += 1
-            continue
         claude_args.append(arg)
         i += 1
 
@@ -301,7 +286,7 @@ def parse_args(argv):
         print("error: -l/--limit is not supported with -o/--ollama-model", file=sys.stderr)
         sys.exit(1)
 
-    return ollama_model, limit_usd, lookback_days, debug, claude_args
+    return ollama_model, limit_usd, lookback_days, claude_args
 
 
 class TokenLogger:
@@ -650,7 +635,7 @@ def format_summary(input_tokens, output_tokens, cache_read, cache_create, reques
 
 
 def main():
-    ollama_model, limit_usd, lookback_days, debug, claude_args = parse_args(sys.argv[1:])
+    ollama_model, limit_usd, lookback_days, claude_args = parse_args(sys.argv[1:])
 
     if ollama_model:
         ollama_host = os.environ.get("OLLAMA_HOST", OLLAMA_DEFAULT_HOST)
@@ -668,7 +653,6 @@ def main():
     if limit_usd is not None:
         budget_checker = BudgetChecker(
             limit_usd, lookback_days, Path.cwd(),
-            debug=debug,
             on_exceeded=proxy.budget_exceeded.set,
         )
         budget_checker.start()
