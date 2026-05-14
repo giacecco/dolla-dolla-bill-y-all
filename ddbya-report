@@ -211,6 +211,7 @@ def _col_widths(rows):
     programmatic = [r["programmatic"] for r in rows] + [""]
     reqs = [fmt(r["requests"]) for r in rows]
     inputs = [fmt(r["input_tokens"]) for r in rows]
+    totals = [fmt(r["input_tokens"] + r["cache_read"] + r["cache_create"]) for r in rows]
     outputs = [fmt(r["output_tokens"]) for r in rows]
     reads = [fmt(r["cache_read"]) for r in rows]
     creates = [fmt(r["cache_create"]) for r in rows]
@@ -221,10 +222,11 @@ def _col_widths(rows):
         ("Model",         lw("Model", models)),
         ("Programmatic",  lw("Programmatic", programmatic)),
         ("Reqs",          rw("Reqs", reqs)),
-        ("Input Tokens",  rw("Input Tokens", inputs)),
-        ("Output Tokens", rw("Output Tokens", outputs)),
+        ("Input (base)",  rw("Input (base)", inputs)),
         ("Cache Read",    rw("Cache Read", reads)),
         ("Cache Create",  rw("Cache Create", creates)),
+        ("Total Input",   rw("Total Input", totals)),
+        ("Output Tokens", rw("Output Tokens", outputs)),
         ("Cost (USD)",    rw("Cost (USD)", costs)),
     ]
 
@@ -268,10 +270,11 @@ def report(rows, from_date, to_date):
                     _cell("", cols[2][1]) + "  " +
                     _cell(fmt(proj_reqs), cols[3][1]) + "  " +
                     _cell(fmt(proj_input), cols[4][1]) + "  " +
-                    _cell(fmt(proj_output), cols[5][1]) + "  " +
-                    _cell(fmt(proj_read), cols[6][1]) + "  " +
-                    _cell(fmt(proj_create), cols[7][1]) + "  " +
-                    _cell(fmt_cost(proj_cost), cols[8][1]))
+                    _cell(fmt(proj_read), cols[5][1]) + "  " +
+                    _cell(fmt(proj_create), cols[6][1]) + "  " +
+                    _cell(fmt(proj_input + proj_read + proj_create), cols[7][1]) + "  " +
+                    _cell(fmt(proj_output), cols[8][1]) + "  " +
+                    _cell(fmt_cost(proj_cost), cols[9][1]))
             print(line)
             print()
         proj_input = proj_output = proj_read = proj_create = proj_reqs = 0
@@ -287,10 +290,11 @@ def report(rows, from_date, to_date):
                 _cell(r["programmatic"], cols[2][1]) + "  " +
                 _cell(fmt(r["requests"]), cols[3][1]) + "  " +
                 _cell(fmt(r["input_tokens"]), cols[4][1]) + "  " +
-                _cell(fmt(r["output_tokens"]), cols[5][1]) + "  " +
-                _cell(fmt(r["cache_read"]), cols[6][1]) + "  " +
-                _cell(fmt(r["cache_create"]), cols[7][1]) + "  " +
-                _cell(fmt_cost(r["cost"]), cols[8][1]))
+                _cell(fmt(r["cache_read"]), cols[5][1]) + "  " +
+                _cell(fmt(r["cache_create"]), cols[6][1]) + "  " +
+                _cell(fmt(r["input_tokens"] + r["cache_read"] + r["cache_create"]), cols[7][1]) + "  " +
+                _cell(fmt(r["output_tokens"]), cols[8][1]) + "  " +
+                _cell(fmt_cost(r["cost"]), cols[9][1]))
         print(line)
 
         proj_input += r["input_tokens"]
@@ -314,10 +318,11 @@ def report(rows, from_date, to_date):
                   _cell("", cols[2][1]) + "  " +
                   _cell(fmt(tot_reqs), cols[3][1]) + "  " +
                   _cell(fmt(tot_input), cols[4][1]) + "  " +
-                  _cell(fmt(tot_output), cols[5][1]) + "  " +
-                  _cell(fmt(tot_read), cols[6][1]) + "  " +
-                  _cell(fmt(tot_create), cols[7][1]) + "  " +
-                  _cell(fmt_cost(tot_cost), cols[8][1]))
+                  _cell(fmt(tot_read), cols[5][1]) + "  " +
+                  _cell(fmt(tot_create), cols[6][1]) + "  " +
+                  _cell(fmt(tot_input + tot_read + tot_create), cols[7][1]) + "  " +
+                  _cell(fmt(tot_output), cols[8][1]) + "  " +
+                  _cell(fmt_cost(tot_cost), cols[9][1]))
     print(total_line)
 
 
