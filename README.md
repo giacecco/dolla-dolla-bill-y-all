@@ -24,9 +24,26 @@ ddbya --model sonnet         # any claude flags are forwarded
 # Ollama -- one flag auto-configures everything
 ddbya -o deepseek-v4-pro:cloud
 ddbya -o deepseek-v4-pro:cloud -p "explain this"
+
+# Budget limit -- refuse to launch / refuse new requests once exceeded
+ddbya --limit 20 --last 7    # cap spend at $20 over the last 7 days
 ```
 
 With `-o`/`--ollama-model`, the wrapper automatically sets the upstream to `OLLAMA_HOST` (defaults to `127.0.0.1:11434`), configures Ollama auth, and passes `--model` to claude. Without `-o`, the wrapper respects your existing `ANTHROPIC_BASE_URL` and auto-detects HTTP vs HTTPS.
+
+## Budget limits
+
+`-l`/`--limit <USD>` together with `--last <days>` puts a soft cap on spend across **all sibling projects under the parent directory**, computed from each project's `token-usage.jsonl` using public Anthropic per-model pricing.
+
+Behaviour:
+
+- **At launch:** if recent spend is already at or above the limit, ddbya refuses to start the session.
+- **During the session:** spend is re-checked every 5 minutes. Warnings are printed to stderr at 80%, 85%, 90%, and from 95% upwards.
+- **Once 100% is crossed mid-session:** the proxy starts replying to any *new* API call with HTTP 429 (a synthetic Anthropic-style error). Already in-flight requests are allowed to complete normally. Once the in-flight count drops to zero, ddbya sends `SIGTERM` to claude, escalating to `SIGKILL` after 30s if needed.
+- **Unrecognised models:** if your `token-usage.jsonl` history mentions a Claude model ddbya doesn't know about (e.g. a release newer than this copy), ddbya warns, falls back to Sonnet pricing as an approximation, and exits with status 1 at the end of the session.
+- **Not supported with `-o`/`--ollama-model`** (no public pricing for arbitrary Ollama models).
+
+`--debug` adds a `[debug]` line to stderr each minute showing the current computed spend.
 
 ## Output
 

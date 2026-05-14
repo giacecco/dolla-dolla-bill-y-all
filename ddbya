@@ -6,11 +6,16 @@ Zero dependencies — Python 3 standard library only.
 Usage:
     ddbya [claude args...]
     ddbya -o <ollama-model> [claude args...]
+    ddbya -l <limit> --last <days> [claude args...]
 
 Options:
     -o, --ollama-model <model>  Route through Ollama with the given model.
                                 Sets the upstream to OLLAMA_HOST (default
                                 127.0.0.1:11434) and configures auth.
+    -l, --limit <USD>          Budget limit in US dollars. Requires --last.
+                                Not supported with -o/--ollama-model.
+    --last <days>              Number of days to look back for budget tracking.
+                                Required when -l/--limit is set.
 
 The proxy writes token usage to ./token-usage.jsonl in the current directory
 and prints a summary to stderr when the session ends.
@@ -27,17 +32,224 @@ import http.server
 import http.client
 import urllib.parse
 import signal
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 TOKEN_LOG_FILE = "token-usage.jsonl"
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
 OLLAMA_DEFAULT_HOST = "127.0.0.1:11434"
 
+# Pricing per million tokens (USD), scraped from platform.claude.com/docs/en/about-claude/pricing.
+# Key: model ID prefix → {input, output, cache_write (5m), cache_read}
+# Matched by longest prefix first against the model string returned by the API.
+MODEL_PRICING = {
+    "claude-opus-4-7":   {"input": 5,    "output": 25,  "cache_write": 6.25, "cache_read": 0.50},
+    "claude-opus-4-6":   {"input": 5,    "output": 25,  "cache_write": 6.25, "cache_read": 0.50},
+    "claude-opus-4-5":   {"input": 5,    "output": 25,  "cache_write": 6.25, "cache_read": 0.50},
+    "claude-opus-4-1":   {"input": 15,   "output": 75,  "cache_write": 18.75,"cache_read": 1.50},
+    "claude-opus-4":     {"input": 15,   "output": 75,  "cache_write": 18.75,"cache_read": 1.50},
+    "claude-sonnet-4-6": {"input": 3,    "output": 15,  "cache_write": 3.75, "cache_read": 0.30},
+    "claude-sonnet-4-5": {"input": 3,    "output": 15,  "cache_write": 3.75, "cache_read": 0.30},
+    "claude-sonnet-4":   {"input": 3,    "output": 15,  "cache_write": 3.75, "cache_read": 0.30},
+    "claude-haiku-4-5":  {"input": 1,    "output": 5,   "cache_write": 1.25, "cache_read": 0.10},
+    "claude-haiku-3-5":  {"input": 0.80, "output": 4,   "cache_write": 1.0,  "cache_read": 0.08},
+}
+_DEFAULT_PRICING = MODEL_PRICING["claude-sonnet-4-6"]
+
+# Sorted keys for longest-prefix-first matching
+_MODEL_PRICING_PREFIXES = sorted(MODEL_PRICING.keys(), key=len, reverse=True)
+
+
+class BudgetChecker:
+    """Periodically scans token-usage.jsonl across sibling projects to enforce a budget."""
+
+    def __init__(self, limit_usd, lookback_days, project_dir, debug=False,
+                 check_interval=300, on_exceeded=None):
+        self._limit_usd = limit_usd
+        self._lookback = timedelta(days=lookback_days)
+        self._project_dir = Path(project_dir).resolve()
+        self._parent_dir = self._project_dir.parent
+        self._check_interval = check_interval
+        self._debug = debug
+        self._on_exceeded = on_exceeded
+        self._lock = threading.Lock()
+        self._current_cost = 0.0
+        self._limit_exceeded = False
+        self._last_notified_pct = -1
+        self._unknown_models = set()
+        self._warned_models = set()
+        self._running = False
+        self._thread = None
+        self._first_check_done = threading.Event()
+
+    def start(self):
+        self._running = True
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+
+    def wait_first_check(self):
+        self._first_check_done.wait()
+
+    @property
+    def limit_exceeded(self):
+        with self._lock:
+            return self._limit_exceeded
+
+    @property
+    def current_cost(self):
+        with self._lock:
+            return self._current_cost
+
+    @property
+    def unknown_models(self):
+        with self._lock:
+            return sorted(self._unknown_models)
+
+    def _run(self):
+        self._check()
+        self._first_check_done.set()
+        while self._running:
+            # Sleep in 60s slices so debug prints stay timely
+            elapsed = 0
+            while elapsed < self._check_interval and self._running:
+                time.sleep(60)
+                elapsed += 60
+                if self._debug and self._running:
+                    with self._lock:
+                        cost = self._current_cost
+                    print(f"[debug] current spend: ${cost:.4f}", file=sys.stderr)
+            if not self._running:
+                break
+            self._check()
+
+    def _check(self):
+        now = datetime.now(timezone.utc)
+        since = now - self._lookback
+
+        total_cost = 0.0
+
+        # Current project
+        log_file = self._project_dir / TOKEN_LOG_FILE
+        if log_file.exists():
+            total_cost += self._cost_from_file(log_file, since)
+
+        # Sibling projects in the parent directory
+        if self._parent_dir.exists():
+            try:
+                for entry in self._parent_dir.iterdir():
+                    if not entry.is_dir() or entry.resolve() == self._project_dir:
+                        continue
+                    log_file = entry / TOKEN_LOG_FILE
+                    if log_file.exists():
+                        total_cost += self._cost_from_file(log_file, since)
+            except PermissionError:
+                pass
+
+        with self._lock:
+            self._current_cost = total_cost
+
+        if self._limit_usd <= 0:
+            return
+
+        pct = int(total_cost / self._limit_usd * 100)
+
+        notify_at = {80, 85, 90, 95}
+        if pct >= 95:
+            notify_at.update(range(95, pct + 1))
+        if pct >= 100:
+            notify_at.add(100)
+
+        if pct in notify_at and pct > self._last_notified_pct:
+            print(f"\nBudget: ${total_cost:.2f} / ${self._limit_usd:.2f} ({pct}%)", file=sys.stderr)
+            self._last_notified_pct = pct
+
+        if pct >= 100:
+            fire_callback = False
+            with self._lock:
+                if not self._limit_exceeded:
+                    fire_callback = True
+                self._limit_exceeded = True
+            if fire_callback and self._on_exceeded is not None:
+                try:
+                    self._on_exceeded()
+                except Exception:
+                    pass
+
+    def _cost_from_file(self, filepath, since):
+        cost = 0.0
+        try:
+            with open(filepath, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    ts = entry.get("timestamp", "").replace("Z", "+00:00")
+                    try:
+                        entry_time = datetime.fromisoformat(ts)
+                    except (ValueError, TypeError):
+                        continue
+                    if entry_time < since:
+                        continue
+                    cost += self._entry_cost(entry)
+        except (OSError, PermissionError):
+            pass
+        return cost
+
+    def _entry_cost(self, entry):
+        model = entry.get("model", "")
+        input_tokens = entry.get("input_tokens", 0)
+        output_tokens = entry.get("output_tokens", 0)
+        cache_read = entry.get("cache_read_input_tokens", 0)
+        cache_create = entry.get("cache_creation_input_tokens", 0)
+
+        pricing = self._find_pricing(model)
+        if pricing is None:
+            return 0.0
+
+        base_input = input_tokens - cache_read - cache_create
+        if base_input < 0:
+            base_input = 0
+
+        cost = 0.0
+        cost += base_input * pricing["input"]
+        cost += output_tokens * pricing["output"]
+        cost += cache_read * pricing["cache_read"]
+        cost += cache_create * pricing["cache_write"]
+        return cost / 1_000_000
+
+    def _find_pricing(self, model):
+        for prefix in _MODEL_PRICING_PREFIXES:
+            if model.startswith(prefix):
+                return MODEL_PRICING[prefix]
+        if model.startswith("claude-"):
+            with self._lock:
+                self._unknown_models.add(model)
+                if model not in self._warned_models:
+                    self._warned_models.add(model)
+                    print(
+                        f"\nUnrecognised Claude model '{model}' — session will finish but ddbya will then exit.\n"
+                        f"Download the latest version:\n"
+                        f"  curl -o ddbya https://raw.githubusercontent.com/giacecco/dolla-dolla-bill-y-all/main/ddbya",
+                        file=sys.stderr,
+                    )
+            return _DEFAULT_PRICING
+        return None
+
 
 def parse_args(argv):
-    """Extract wrapper-specific flags, return (ollama_model_or_none, remaining_args_for_claude)."""
+    """Extract wrapper-specific flags, return (ollama_model_or_none, limit_usd_or_none, lookback_days_or_none, debug, remaining_args_for_claude)."""
     ollama_model = None
+    limit_usd = None
+    lookback_days = None
+    debug = False
     claude_args = []
     i = 0
     while i < len(argv):
@@ -53,9 +265,50 @@ def parse_args(argv):
             ollama_model = val
             i += 2
             continue
+        elif arg in ("-l", "--limit"):
+            if i + 1 >= len(argv):
+                print("error: -l/--limit requires a USD amount", file=sys.stderr)
+                sys.exit(1)
+            try:
+                limit_usd = float(argv[i + 1])
+            except ValueError:
+                print(f"error: invalid limit value: {argv[i + 1]!r}", file=sys.stderr)
+                sys.exit(1)
+            if limit_usd <= 0:
+                print(f"error: limit must be positive: {limit_usd}", file=sys.stderr)
+                sys.exit(1)
+            i += 2
+            continue
+        elif arg == "--last":
+            if i + 1 >= len(argv):
+                print("error: --last requires a number of days", file=sys.stderr)
+                sys.exit(1)
+            try:
+                lookback_days = int(argv[i + 1])
+            except ValueError:
+                print(f"error: invalid --last value: {argv[i + 1]!r}", file=sys.stderr)
+                sys.exit(1)
+            if lookback_days <= 0:
+                print(f"error: --last must be positive: {lookback_days}", file=sys.stderr)
+                sys.exit(1)
+            i += 2
+            continue
+        elif arg == "--debug":
+            debug = True
+            i += 1
+            continue
         claude_args.append(arg)
         i += 1
-    return ollama_model, claude_args
+
+    # Validate: --last is required with --limit, and vice versa
+    if limit_usd is not None and lookback_days is None:
+        print("error: --limit requires --last <days>", file=sys.stderr)
+        sys.exit(1)
+    if lookback_days is not None and limit_usd is None:
+        print("error: --last requires --limit <USD>", file=sys.stderr)
+        sys.exit(1)
+
+    return ollama_model, limit_usd, lookback_days, debug, claude_args
 
 
 class TokenLogger:
@@ -91,6 +344,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
     upstream_netloc = "api.anthropic.com"
     token_logger = None
     programmatic = False
+    proxy = None
 
     # Suppress http.server's default request logging
     def log_message(self, format, *args):
@@ -112,7 +366,43 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             entry["cache_creation_input_tokens"] = cache_create
         self.token_logger.log(entry)
 
+    def _refuse_budget_exceeded(self):
+        """Reply with a synthetic Anthropic-style error so claude surfaces it cleanly."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length:
+            try:
+                self.rfile.read(content_length)
+            except OSError:
+                pass
+        body = json.dumps({
+            "type": "error",
+            "error": {
+                "type": "overloaded_error",
+                "message": "ddbya: budget limit exceeded; new requests are blocked.",
+            },
+        }).encode()
+        try:
+            self.send_response(429, "Too Many Requests")
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:
+            pass
+
     def _forward(self, method):
+        if self.proxy is not None and self.proxy.budget_exceeded.is_set():
+            self._refuse_budget_exceeded()
+            return
+        if self.proxy is not None:
+            self.proxy.begin_request()
+        try:
+            self._do_forward(method)
+        finally:
+            if self.proxy is not None:
+                self.proxy.end_request()
+
+    def _do_forward(self, method):
         # Read the request body
         content_length = int(self.headers.get("Content-Length", 0))
         req_body = self.rfile.read(content_length) if content_length else b""
@@ -298,6 +588,29 @@ class ReverseProxy:
         self._server = None
         self._thread = None
 
+        # Coordinates graceful shutdown when a budget limit is exceeded:
+        # budget_exceeded → handler refuses new requests; idle Event allows
+        # the watchdog to wait until in-flight requests have drained.
+        self.budget_exceeded = threading.Event()
+        self._in_flight = 0
+        self._in_flight_lock = threading.Lock()
+        self._idle = threading.Event()
+        self._idle.set()
+
+    def begin_request(self):
+        with self._in_flight_lock:
+            self._in_flight += 1
+            self._idle.clear()
+
+    def end_request(self):
+        with self._in_flight_lock:
+            self._in_flight -= 1
+            if self._in_flight == 0:
+                self._idle.set()
+
+    def wait_idle(self):
+        self._idle.wait()
+
     @property
     def port(self):
         return self._server.server_address[1] if self._server else None
@@ -314,18 +627,16 @@ class ReverseProxy:
             self._server.shutdown()
 
     def _build_handler(self):
-        token_logger = self.token_logger
-        upstream_scheme = self.upstream_scheme
-        upstream_netloc = self.upstream_netloc
-        programmatic = self.programmatic
+        proxy = self
 
         class BoundHandler(ReverseProxyHandler):
             pass
 
-        BoundHandler.token_logger = token_logger
-        BoundHandler.upstream_scheme = upstream_scheme
-        BoundHandler.upstream_netloc = upstream_netloc
-        BoundHandler.programmatic = programmatic
+        BoundHandler.token_logger = proxy.token_logger
+        BoundHandler.upstream_scheme = proxy.upstream_scheme
+        BoundHandler.upstream_netloc = proxy.upstream_netloc
+        BoundHandler.programmatic = proxy.programmatic
+        BoundHandler.proxy = proxy
         return BoundHandler
 
 
@@ -346,7 +657,11 @@ def format_summary(input_tokens, output_tokens, cache_read, cache_create, reques
 
 
 def main():
-    ollama_model, claude_args = parse_args(sys.argv[1:])
+    ollama_model, limit_usd, lookback_days, debug, claude_args = parse_args(sys.argv[1:])
+
+    if limit_usd is not None and ollama_model:
+        print("error: -l/--limit is not supported with -o/--ollama-model", file=sys.stderr)
+        sys.exit(1)
 
     if ollama_model:
         ollama_host = os.environ.get("OLLAMA_HOST", OLLAMA_DEFAULT_HOST)
@@ -359,6 +674,39 @@ def main():
 
     proxy = ReverseProxy(upstream, programmatic=programmatic)
     proxy.start()
+
+    budget_checker = None
+    if limit_usd is not None:
+        budget_checker = BudgetChecker(
+            limit_usd, lookback_days, Path.cwd(),
+            debug=debug,
+            on_exceeded=proxy.budget_exceeded.set,
+        )
+        budget_checker.start()
+        budget_checker.wait_first_check()
+
+        unknown = budget_checker.unknown_models
+        if unknown:
+            print(
+                f"\nUnrecognised model(s) in recent token usage: {', '.join(unknown)}\n"
+                f"Your copy of ddbya may be out of date. Download the latest version:\n"
+                f"  curl -o ddbya https://raw.githubusercontent.com/giacecco/dolla-dolla-bill-y-all/main/ddbya",
+                file=sys.stderr,
+            )
+            proxy.stop()
+            budget_checker.stop()
+            sys.exit(1)
+
+        if budget_checker.limit_exceeded:
+            print(
+                f"Budget limit already exceeded: "
+                f"${budget_checker.current_cost:.2f} / ${limit_usd:.2f} "
+                f"in the last {lookback_days} day(s).",
+                file=sys.stderr,
+            )
+            proxy.stop()
+            budget_checker.stop()
+            sys.exit(1)
 
     env = os.environ.copy()
     env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{proxy.port}"
@@ -376,22 +724,72 @@ def main():
     # restoring SIG_DFL lets the claude subprocess receive the signal directly.
     original_sigint = signal.signal(signal.SIGINT, signal.SIG_DFL)
 
+    proc = subprocess.Popen(
+        ["claude"] + claude_args,
+        env=env,
+        stdin=sys.stdin,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+    )
+
+    if budget_checker is not None:
+        def _watchdog():
+            proxy.budget_exceeded.wait()
+            print(
+                f"\nBudget limit exceeded "
+                f"(${budget_checker.current_cost:.2f} / ${limit_usd:.2f} "
+                f"in the last {lookback_days} day(s)). "
+                f"New API calls will be refused; the session will end once "
+                f"in-flight requests have completed.",
+                file=sys.stderr,
+            )
+            proxy.wait_idle()
+            proc.terminate()
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                print(
+                    "claude did not exit within 30s of SIGTERM; sending SIGKILL.",
+                    file=sys.stderr,
+                )
+                proc.kill()
+
+        threading.Thread(target=_watchdog, daemon=True).start()
+
     try:
-        result = subprocess.run(
-            ["claude"] + claude_args,
-            env=env,
-            stdin=sys.stdin,
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-        )
-        exit_code = result.returncode
+        exit_code = proc.wait()
     finally:
         signal.signal(signal.SIGINT, original_sigint)
+        if budget_checker:
+            budget_checker.stop()
         proxy.stop()
 
     input_tokens, output_tokens, cache_read, cache_create, request_count = proxy.token_logger.summary()
     if request_count > 0:
         print(format_summary(input_tokens, output_tokens, cache_read, cache_create, request_count), file=sys.stderr)
+
+    if budget_checker:
+        print(
+            f"\nTotal spend (last {lookback_days} day(s), all projects): "
+            f"${budget_checker.current_cost:.2f} / ${limit_usd:.2f}",
+            file=sys.stderr,
+        )
+        unknown = budget_checker.unknown_models
+        if unknown:
+            print(
+                f"\nUnrecognised model(s) encountered during session: {', '.join(unknown)}\n"
+                f"Your copy of ddbya may be out of date. Download the latest version:\n"
+                f"  curl -o ddbya https://raw.githubusercontent.com/giacecco/dolla-dolla-bill-y-all/main/ddbya",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if budget_checker.limit_exceeded:
+            print(
+                f"Budget limit was exceeded; further ddbya launches will be "
+                f"refused until spend over the last {lookback_days} day(s) "
+                f"drops below ${limit_usd:.2f}.",
+                file=sys.stderr,
+            )
 
     sys.exit(exit_code)
 
