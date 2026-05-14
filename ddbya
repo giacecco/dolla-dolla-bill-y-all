@@ -69,13 +69,19 @@ class BudgetChecker:
     """Periodically scans token-usage.jsonl across sibling projects to enforce a budget."""
 
     def __init__(self, limit_usd, lookback_days, project_dir,
-                 check_interval=60, on_exceeded=None):
+                 check_interval=60, on_exceeded=None, is_idle=None):
         self._limit_usd = limit_usd
         self._lookback = timedelta(days=lookback_days)
         self._project_dir = Path(project_dir).resolve()
         self._parent_dir = self._project_dir.parent
         self._check_interval = check_interval
         self._on_exceeded = on_exceeded
+        # Optional callable returning True when it's safe to print a warning
+        # (no in-flight proxied requests, so claude's TUI is not actively
+        # repainting on top of our stderr output). If None, warnings print
+        # immediately on every threshold crossing.
+        self._is_idle = is_idle
+        self._pending_warning = None
         self._lock = threading.Lock()
         self._current_cost = 0.0
         self._limit_exceeded = False
@@ -175,8 +181,18 @@ class BudgetChecker:
             crossed = [t for t in _BUDGET_WARN_THRESHOLDS
                        if t <= pct and t > self._last_notified_pct]
             if crossed:
-                print(f"\nBudget: ${total_cost:.2f} / ${self._limit_usd:.2f} ({pct}%).", file=sys.stderr)
+                # Stash the latest message; a fresh crossing on a later tick
+                # supersedes a still-pending one (we only ever show the most
+                # recent budget state).
+                self._pending_warning = f"\nBudget: ${total_cost:.2f} / ${self._limit_usd:.2f} ({pct}%)."
                 self._last_notified_pct = crossed[-1]
+
+        # Flush a pending warning only when the proxy is idle, so claude's
+        # TUI doesn't immediately repaint over it mid-stream.
+        if self._pending_warning is not None:
+            if self._is_idle is None or self._is_idle():
+                print(self._pending_warning, file=sys.stderr)
+                self._pending_warning = None
 
         if pct >= 100:
             fire_callback = False
@@ -715,6 +731,10 @@ class ReverseProxy:
         self._idle.wait()
 
     @property
+    def is_idle(self):
+        return self._idle.is_set()
+
+    @property
     def port(self):
         return self._server.server_address[1] if self._server else None
 
@@ -779,6 +799,7 @@ def main():
         budget_checker = BudgetChecker(
             limit_usd, lookback_days, Path.cwd(),
             on_exceeded=proxy.budget_exceeded.set,
+            is_idle=lambda: proxy.is_idle,
         )
         budget_checker.start()
         budget_checker.wait_first_check()
