@@ -7,6 +7,7 @@ Usage:
     ddbya [claude args...]
     ddbya -o <ollama-model> [claude args...]
     ddbya -l <limit> --last <days> [claude args...]
+    ddbya -t <tag> [claude args...]
 
 Options:
     -o, --ollama-model <model>  Route through Ollama with the given model.
@@ -16,6 +17,9 @@ Options:
                                 Not supported with -o/--ollama-model.
     --last <days>              Number of days to look back for budget tracking.
                                 Required when -l/--limit is set.
+    -t, --tag <tag>            Tag to label this session's consumption. Can be
+                                given multiple times. Tags are written into
+                                each token-usage.jsonl entry.
 
 The proxy writes token usage to ./token-usage.jsonl in the current directory
 and prints a summary to stderr when the session ends.
@@ -304,10 +308,11 @@ class BudgetChecker:
 
 
 def parse_args(argv):
-    """Extract wrapper-specific flags, return (ollama_model_or_none, limit_usd_or_none, lookback_days_or_none, remaining_args_for_claude)."""
+    """Extract wrapper-specific flags, return (ollama_model_or_none, limit_usd_or_none, lookback_days_or_none, tags, remaining_args_for_claude)."""
     ollama_model = None
     limit_usd = None
     lookback_days = None
+    tags = []
     claude_args = []
     i = 0
     while i < len(argv):
@@ -360,6 +365,13 @@ def parse_args(argv):
                 sys.exit(1)
             i += 2
             continue
+        elif arg in ("-t", "--tag"):
+            if i + 1 >= len(argv):
+                print("error: -t/--tag requires a value", file=sys.stderr)
+                sys.exit(1)
+            tags.append(argv[i + 1])
+            i += 2
+            continue
         claude_args.append(arg)
         i += 1
 
@@ -373,7 +385,7 @@ def parse_args(argv):
         print("error: -l/--limit is not supported with -o/--ollama-model", file=sys.stderr)
         sys.exit(1)
 
-    return ollama_model, limit_usd, lookback_days, claude_args
+    return ollama_model, limit_usd, lookback_days, tags, claude_args
 
 
 # Claude CLI flags that consume the next argv token as their value. Used by
@@ -449,6 +461,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
     upstream_netloc = "api.anthropic.com"
     token_logger = None
     programmatic = False
+    tags = None
     proxy = None
 
     # Suppress http.server's default request logging
@@ -465,6 +478,8 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
         }
         if self.programmatic:
             entry["programmatic"] = True
+        if self.tags:
+            entry["tags"] = list(self.tags)
         if cache_read:
             entry["cache_read_input_tokens"] = cache_read
         if cache_create:
@@ -692,7 +707,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
 class ReverseProxy:
     """Manages the lifecycle of the reverse proxy HTTP server."""
 
-    def __init__(self, upstream_url, programmatic=False):
+    def __init__(self, upstream_url, programmatic=False, tags=None):
         parsed = urllib.parse.urlparse(upstream_url)
         if parsed.scheme and parsed.netloc:
             self.upstream_scheme = parsed.scheme
@@ -703,6 +718,7 @@ class ReverseProxy:
             self.upstream_netloc = default.netloc
 
         self.programmatic = programmatic
+        self.tags = tags or []
         self.token_logger = TokenLogger(TOKEN_LOG_FILE)
         self._server = None
         self._thread = None
@@ -759,6 +775,7 @@ class ReverseProxy:
         BoundHandler.upstream_scheme = proxy.upstream_scheme
         BoundHandler.upstream_netloc = proxy.upstream_netloc
         BoundHandler.programmatic = proxy.programmatic
+        BoundHandler.tags = proxy.tags
         BoundHandler.proxy = proxy
         return BoundHandler
 
@@ -780,7 +797,7 @@ def format_summary(input_tokens, output_tokens, cache_read, cache_create, reques
 
 
 def main():
-    ollama_model, limit_usd, lookback_days, claude_args = parse_args(sys.argv[1:])
+    ollama_model, limit_usd, lookback_days, tags, claude_args = parse_args(sys.argv[1:])
 
     if ollama_model:
         ollama_host = os.environ.get("OLLAMA_HOST", OLLAMA_DEFAULT_HOST)
@@ -791,7 +808,7 @@ def main():
 
     programmatic = is_programmatic_invocation(claude_args)
 
-    proxy = ReverseProxy(upstream, programmatic=programmatic)
+    proxy = ReverseProxy(upstream, programmatic=programmatic, tags=tags)
     proxy.start()
 
     budget_checker = None

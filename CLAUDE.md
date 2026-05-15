@@ -49,6 +49,10 @@ ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] 
 
 The `-o`/`--ollama-model` flag auto-configures: upstream set to `http://<OLLAMA_HOST>` (default `127.0.0.1:11434`), `ANTHROPIC_AUTH_TOKEN=ollama`, `ANTHROPIC_API_KEY` removed from env, and `--model <model>` prepended to claude args.
 
+## Maintenance
+
+- When a new Claude Code version is released, verify that none of ddbya's own short flags (`-o`, `-l`, `-t`, `-p`) or long flags (`--ollama-model`, `--limit`, `--last`, `--tag`) conflict with new flags introduced by Claude Code itself. A conflict would shadow or consume a flag meant for the wrapped `claude` process.
+
 ## Conventions
 
 - British English spelling in all prose and identifiers.

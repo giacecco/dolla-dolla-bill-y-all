@@ -10,6 +10,7 @@ Zero dependencies — Python 3 standard library only.
 
 import sys
 import json
+import re
 import importlib.util
 import importlib.machinery
 from datetime import datetime, timezone, timedelta
@@ -68,7 +69,9 @@ def parse_args():
                 sys.exit(f"Invalid --to date (expected YYYY-MM-DD): {args[i + 1]}")
             params["to"] = args[i + 1]
             i += 2
-        elif args[i] in ("-t", "--tag") and i + 1 < len(args):
+        elif args[i] in ("-t", "--tag"):
+            if i + 1 >= len(args):
+                sys.exit("error: -t/--tag requires a value")
             params["tags"].append(args[i + 1])
             i += 2
         else:
@@ -116,6 +119,13 @@ def entry_cost(model, input_tokens, output_tokens, cache_read, cache_create):
     ) / 1_000_000
 
 
+def _match_tag(pattern, tag):
+    """If /pattern/, treat as regex; otherwise literal exact match."""
+    if pattern.startswith("/") and pattern.endswith("/") and len(pattern) > 2:
+        return re.search(pattern[1:-1], tag)
+    return pattern == tag
+
+
 def collect_entries(root, from_date, to_date, tag_filters=None):
     direct = root / "token-usage.jsonl"
     if direct.exists():
@@ -149,9 +159,12 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
                     entry_tags = sorted(entry_tags, key=str.lower)
                 else:
                     entry_tags = []
-                if tag_filters and not set(tag_filters).issubset(entry_tags):
+                if tag_filters and not all(
+                    any(_match_tag(pat, tag) for tag in entry_tags)
+                    for pat in tag_filters
+                ):
                     continue
-                tag_str = ", ".join(entry_tags) if entry_tags else ""
+                tag_str = " | ".join(entry_tags) if entry_tags else ""
                 inp = entry.get("input_tokens", 0)
                 out = entry.get("output_tokens", 0)
                 cr = entry.get("cache_read_input_tokens", 0)
@@ -250,11 +263,11 @@ def _col_widths(rows):
     return cols, show_tags
 
 
-def _build_row(values, cols):
-    """Build a table row from a list of (value, col_index) pairs."""
+def _build_row(values, cols_by_name):
+    """Build a table row from a list of (value, col_name) pairs."""
     parts = []
-    for value, ci in values:
-        _, width = cols[ci]
+    for value, name in values:
+        _, width = cols_by_name[name]
         if width < 0:
             parts.append(f"{value:<{-width}}")
         else:
@@ -276,25 +289,13 @@ def report(rows, from_date, to_date):
         return
 
     cols, show_tags = _col_widths(rows)
+    cols_by_name = {name: (name, width) for name, width in cols}
 
     header_line = "  ".join(f"{label:<{-width}}" if width < 0 else f"{label:>{width}}" for label, width in cols)
     print(header_line)
     print("  ".join("─" * abs(w) for _, w in cols))
 
-    # Column indices. Tags (when present) is always last.
-    _ci_project = 0
-    _ci_model = 1
-    _ci_prog = 2
-    _ci_reqs = 3
-    _ci_input = 4
-    _ci_read = 5
-    _ci_create = 6
-    _ci_tot_inp = 7
-    _ci_output = 8
-    _ci_cost = 9
-    _ci_tags = 10
-
-    _blank = [("", _ci_model), ("", _ci_prog)]
+    _blank = [("", "Model"), ("", "Programmatic")]
 
     last_project = None
     proj_input = proj_output = proj_read = proj_create = proj_reqs = 0
@@ -305,16 +306,16 @@ def report(rows, from_date, to_date):
     def flush_project():
         nonlocal proj_input, proj_output, proj_read, proj_create, proj_reqs, proj_cost
         if last_project is not None and proj_reqs:
-            vals = [("(subtotal)", _ci_project)] + _blank + [
-                (fmt(proj_reqs), _ci_reqs),
-                (fmt(proj_input), _ci_input),
-                (fmt(proj_read), _ci_read),
-                (fmt(proj_create), _ci_create),
-                (fmt(proj_input + proj_read + proj_create), _ci_tot_inp),
-                (fmt(proj_output), _ci_output),
-                (fmt_cost(proj_cost), _ci_cost),
+            vals = [("(subtotal)", "Project")] + _blank + [
+                (fmt(proj_reqs), "Reqs"),
+                (fmt(proj_input), "Input (base)"),
+                (fmt(proj_read), "Cache Read"),
+                (fmt(proj_create), "Cache Create"),
+                (fmt(proj_input + proj_read + proj_create), "Total Input"),
+                (fmt(proj_output), "Output Tokens"),
+                (fmt_cost(proj_cost), "Cost (USD)"),
             ]
-            print(_build_row(vals, cols))
+            print(_build_row(vals, cols_by_name))
             print()
         proj_input = proj_output = proj_read = proj_create = proj_reqs = 0
         proj_cost = 0.0
@@ -325,20 +326,20 @@ def report(rows, from_date, to_date):
             last_project = r["project"]
 
         vals = [
-            (r["project"], _ci_project),
-            (r["model"], _ci_model),
-            (r["programmatic"], _ci_prog),
-            (fmt(r["requests"]), _ci_reqs),
-            (fmt(r["input_tokens"]), _ci_input),
-            (fmt(r["cache_read"]), _ci_read),
-            (fmt(r["cache_create"]), _ci_create),
-            (fmt(r["input_tokens"] + r["cache_read"] + r["cache_create"]), _ci_tot_inp),
-            (fmt(r["output_tokens"]), _ci_output),
-            (fmt_cost(r["cost"]), _ci_cost),
+            (r["project"], "Project"),
+            (r["model"], "Model"),
+            (r["programmatic"], "Programmatic"),
+            (fmt(r["requests"]), "Reqs"),
+            (fmt(r["input_tokens"]), "Input (base)"),
+            (fmt(r["cache_read"]), "Cache Read"),
+            (fmt(r["cache_create"]), "Cache Create"),
+            (fmt(r["input_tokens"] + r["cache_read"] + r["cache_create"]), "Total Input"),
+            (fmt(r["output_tokens"]), "Output Tokens"),
+            (fmt_cost(r["cost"]), "Cost (USD)"),
         ]
         if show_tags:
-            vals.append((r["tags"], _ci_tags))
-        print(_build_row(vals, cols))
+            vals.append((r["tags"], "Tags"))
+        print(_build_row(vals, cols_by_name))
 
         proj_input += r["input_tokens"]
         proj_output += r["output_tokens"]
@@ -356,16 +357,16 @@ def report(rows, from_date, to_date):
 
     flush_project()
 
-    total_vals = [("TOTAL", _ci_project)] + _blank + [
-        (fmt(tot_reqs), _ci_reqs),
-        (fmt(tot_input), _ci_input),
-        (fmt(tot_read), _ci_read),
-        (fmt(tot_create), _ci_create),
-        (fmt(tot_input + tot_read + tot_create), _ci_tot_inp),
-        (fmt(tot_output), _ci_output),
-        (fmt_cost(tot_cost), _ci_cost),
+    total_vals = [("TOTAL", "Project")] + _blank + [
+        (fmt(tot_reqs), "Reqs"),
+        (fmt(tot_input), "Input (base)"),
+        (fmt(tot_read), "Cache Read"),
+        (fmt(tot_create), "Cache Create"),
+        (fmt(tot_input + tot_read + tot_create), "Total Input"),
+        (fmt(tot_output), "Output Tokens"),
+        (fmt_cost(tot_cost), "Cost (USD)"),
     ]
-    print(_build_row(total_vals, cols))
+    print(_build_row(total_vals, cols_by_name))
 
 
 def main():

@@ -95,8 +95,8 @@ Token Usage Report — 2026-05-08 to 2026-05-14
 
 Project                 Model                      Programmatic  Reqs  Input (base)  Cache Read  Cache Create  Total Input  Output Tokens  Cost (USD)  Tags
 ──────────────────────  ─────────────────────────  ────────────  ────  ────────────  ──────────  ────────────  ───────────  ─────────────  ──────────  ─────────────────────────────────────────────────
-dolla-dolla-bill-y-all  claude-haiku-4-5-20251001  no               2           347           -             -          347             11       $0.00  code review, ddbya core dev, Steve's tags request
-dolla-dolla-bill-y-all  claude-opus-4-7            no              10         1,043     509,891        70,391      581,325          7,025       $0.88  code review, ddbya core dev, Steve's tags request
+dolla-dolla-bill-y-all  claude-haiku-4-5-20251001  no               2           347           -             -          347             11       $0.00  code review | ddbya core dev | Steve's tags request
+dolla-dolla-bill-y-all  claude-opus-4-7            no              10         1,043     509,891        70,391      581,325          7,025       $0.88  code review | ddbya core dev | Steve's tags request
 (subtotal)                                                         12         1,390     509,891        70,391      581,672          7,036       $0.88
 
 TOTAL                                                              12         1,390     509,891        70,391      581,672          7,036       $0.88
