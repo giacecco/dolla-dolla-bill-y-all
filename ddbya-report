@@ -3,7 +3,7 @@
 Aggregate token usage across multiple Claude Code projects.
 
 Usage:
-    ddbya-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json]
+    ddbya-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]
 
 Includes all data by default. Pass --last, --from, or --to to filter by date.
 
@@ -11,6 +11,7 @@ Zero dependencies — Python 3 standard library only.
 """
 
 import sys
+import csv
 import json
 import re
 import importlib.util
@@ -41,13 +42,13 @@ MODEL_PRICING, _DEFAULT_PRICING, _MODEL_PRICING_PREFIXES = _load_pricing_from_dd
 def parse_args():
     args = sys.argv[1:]
     if not args:
-        sys.exit("Usage: ddbya-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json]")
+        sys.exit("Usage: ddbya-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]")
 
     root = Path(args[0])
     if not root.is_dir():
         sys.exit(f"Not a directory: {root}")
 
-    params = {"root": root, "last": None, "from": None, "to": None, "tags": [], "json": False}
+    params = {"root": root, "last": None, "from": None, "to": None, "tags": [], "json": False, "csv": False}
 
     i = 1
     while i < len(args):
@@ -79,11 +80,16 @@ def parse_args():
         elif args[i] == "--json":
             params["json"] = True
             i += 1
+        elif args[i] == "--csv":
+            params["csv"] = True
+            i += 1
         else:
             sys.exit(f"Unknown argument: {args[i]}")
 
     if params["last"] is not None and (params["from"] or params["to"]):
         sys.exit("error: --last cannot be combined with --from or --to")
+    if params["json"] and params["csv"]:
+        sys.exit("error: --json and --csv are mutually exclusive")
 
     return params
 
@@ -381,6 +387,30 @@ def report(rows, from_date, to_date):
     print(_build_row(total_vals, cols_by_name))
 
 
+def csv_report(rows):
+    if not rows:
+        return
+
+    show_tags = any(r.get("tags") for r in rows)
+    headers = ["Project", "Model", "Programmatic", "Reqs", "Input (base)",
+               "Cache Read", "Cache Create", "Total Input", "Output Tokens", "Cost (USD)"]
+    if show_tags:
+        headers.append("Tags")
+
+    writer = csv.writer(sys.stdout)
+    writer.writerow(headers)
+    for r in rows:
+        total_input = r["input_tokens"] + r["cache_read"] + r["cache_create"]
+        row = [
+            r["project"], r["model"], r["programmatic"], r["requests"],
+            r["input_tokens"], r["cache_read"], r["cache_create"],
+            total_input, r["output_tokens"], f"{r['cost']:.6f}",
+        ]
+        if show_tags:
+            row.append(" | ".join(r["tags"]) if r["tags"] else "")
+        writer.writerow(row)
+
+
 def main():
     params = parse_args()
     from_date, to_date = resolve_window(params)
@@ -394,6 +424,8 @@ def main():
         }
         json.dump(output, sys.stdout, separators=(",", ":"))
         print()
+    elif params["csv"]:
+        csv_report(rows)
     else:
         report(rows, from_date, to_date)
 

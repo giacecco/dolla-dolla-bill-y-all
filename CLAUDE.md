@@ -34,7 +34,7 @@ Uses only Python 3 standard library: `http.server`, `http.client`, `urllib.parse
 `ddbya-report` aggregates `.token-usage.ddbya` files across multiple projects.
 
 ```
-ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...]
+ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]
 ```
 
 - If the given folder directly contains `.token-usage.ddbya`, reports on that project only. Otherwise scans subdirectories recursively for `.token-usage.ddbya` files.

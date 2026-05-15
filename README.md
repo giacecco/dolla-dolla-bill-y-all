@@ -100,10 +100,10 @@ Session token usage:
 `ddbya-report` aggregates `.token-usage.ddbya` files across multiple projects.
 
 ```sh
-ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json]
+ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]
 ```
 
-If the given folder directly contains a `.token-usage.ddbya` file, it reports on that project only. Otherwise it recursively scans all subdirectories for `.token-usage.ddbya` files. Groups usage by top-level subfolder, model, programmatic flag, and tags. Includes all data by default — pass `--last`, `--from`, or `--to` to filter by date. `--from` and `--to` can be used together or individually; `--from` without `--to` means "from that date to now". `--last` is mutually exclusive with `--from`/`--to`. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. `--json` outputs compact JSON to stdout instead of the table. Each row's `tags` is an array of strings. Zero dependencies — Python 3 standard library only.
+If the given folder directly contains a `.token-usage.ddbya` file, it reports on that project only. Otherwise it recursively scans all subdirectories for `.token-usage.ddbya` files. Groups usage by top-level subfolder, model, programmatic flag, and tags. Includes all data by default — pass `--last`, `--from`, or `--to` to filter by date. `--from` and `--to` can be used together or individually; `--from` without `--to` means "from that date to now". `--last` is mutually exclusive with `--from`/`--to`. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. `--json` outputs compact JSON to stdout instead of the table. `--csv` outputs CSV with a header row. Each row's `tags` is an array of strings in JSON, or a pipe-joined string in CSV. `--json` and `--csv` are mutually exclusive. Zero dependencies — Python 3 standard library only.
 
 Example — last 7 days of consumption for this project:
 
