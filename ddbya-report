@@ -80,6 +80,9 @@ def parse_args():
         else:
             sys.exit(f"Unknown argument: {args[i]}")
 
+    if params["last"] is not None and (params["from"] or params["to"]):
+        sys.exit("error: --last cannot be combined with --from or --to")
+
     return params
 
 
@@ -142,7 +145,7 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
             project = root.name or root.resolve().name
         else:
             project = jsonl_path.relative_to(root).parts[0]
-        with open(jsonl_path) as f:
+        with open(jsonl_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
