@@ -133,11 +133,11 @@ def _match_tag(pattern, tag):
 
 
 def collect_entries(root, from_date, to_date, tag_filters=None):
-    direct = root / "token-usage.jsonl"
+    direct = root / ".token-usage.ddbya"
     if direct.exists():
         paths = [direct]
     else:
-        paths = sorted(root.rglob("token-usage.jsonl"))
+        paths = sorted(root.rglob(".token-usage.ddbya"))
 
     usage = []
     for jsonl_path in paths:

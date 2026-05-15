@@ -19,9 +19,9 @@ Options:
                                 Required when -l/--limit is set.
     -t, --tag <tag>            Tag to label this session's consumption. Can be
                                 given multiple times. Tags are written into
-                                each token-usage.jsonl entry.
+                                each .token-usage.ddbya entry.
 
-The proxy writes token usage to ./token-usage.jsonl in the current directory
+The proxy writes token usage to ./.token-usage.ddbya in the current directory
 and prints a summary to stderr when the session ends.
 """
 
@@ -39,7 +39,7 @@ import signal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-TOKEN_LOG_FILE = "token-usage.jsonl"
+TOKEN_LOG_FILE = ".token-usage.ddbya"
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
 OLLAMA_DEFAULT_HOST = "127.0.0.1:11434"
 
@@ -69,7 +69,7 @@ _BUDGET_WARN_THRESHOLDS = (80, 85, 90, 95, 96, 97, 98, 99)
 
 
 class BudgetChecker:
-    """Periodically scans token-usage.jsonl across sibling projects to enforce a budget."""
+    """Periodically scans .token-usage.ddbya across sibling projects to enforce a budget."""
 
     def __init__(self, limit_usd, lookback_days, project_dir,
                  check_interval=60, on_exceeded=None, is_idle=None):
@@ -406,7 +406,7 @@ def parse_args(argv):
 
 
 def _find_tag_root(start_dir):
-    """Walk up until we find a parent without token-usage.jsonl, return that root."""
+    """Walk up until we find a parent without .token-usage.ddbya, return that root."""
     current = Path(start_dir).resolve()
     while True:
         parent = current.parent
@@ -419,7 +419,7 @@ def _find_tag_root(start_dir):
 
 
 def _collect_tags_from_dir(root_dir):
-    """Recursively collect tags from all token-usage.jsonl files under root_dir."""
+    """Recursively collect tags from all .token-usage.ddbya files under root_dir."""
     tags = set()
     root = Path(root_dir)
     for log_file in root.rglob(TOKEN_LOG_FILE):
@@ -444,7 +444,7 @@ def _collect_tags_from_dir(root_dir):
 
 
 def collect_tags(project_dir):
-    """Walk up to the nearest ancestor without token-usage.jsonl, then collect all tags recursively downwards."""
+    """Walk up to the nearest ancestor without .token-usage.ddbya, then collect all tags recursively downwards."""
     root = _find_tag_root(project_dir)
     return sorted(_collect_tags_from_dir(root))
 

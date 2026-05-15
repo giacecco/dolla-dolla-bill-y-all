@@ -6,13 +6,13 @@ A zero-dependency Python 3 reverse proxy that wraps Claude Code to intercept and
 
 ## Architecture
 
-- `TokenLogger` — thread-safe JSONL writer with in-memory session tracking. Writes to `./token-usage.jsonl`.
+- `TokenLogger` — thread-safe JSONL writer with in-memory session tracking. Writes to `./.token-usage.ddbya`.
 - `ReverseProxyHandler` — `http.server.BaseHTTPRequestHandler` subclass. Forwards any HTTP method to the upstream, relays streaming (SSE) and non-streaming responses chunk-by-chunk, and extracts `usage` from the response. When `proxy.budget_exceeded` is set, refuses new requests with HTTP 429 + a synthetic Anthropic error JSON (`overloaded_error`).
 - `ReverseProxy` — manages the `ThreadingHTTPServer` lifecycle. Binds to port 0 for auto-selection, passes upstream scheme/netloc, tags, and programmatic flag to the handler via class attributes. Tracks in-flight request count behind a lock and exposes `wait_idle()` plus a `budget_exceeded` Event used by the watchdog for graceful shutdown.
-- `BudgetChecker` — daemon thread that scans `token-usage.jsonl` from the current project and immediate sibling directories every minute, computes USD spend from `MODEL_PRICING`, and fires a one-shot `on_exceeded` callback the first time spend crosses 100% of the limit. Maintains a per-file `(mtime, offset, entries)` cache so each tick only reads bytes appended since the last scan; entries that drop out of the lookback window are pruned. Emits stderr warnings when spend crosses 80/85/90% and each integer percentage from 95–99% (crossing, not landing — spend can jump several points between ticks). On the first tick of a session that starts already past one or more thresholds, fires a single warning at the highest crossed threshold rather than one per threshold below the current pct. At 100%+ the exceeded message is shown instead so the percentage line doesn't duplicate it. Warnings are deferred while requests are in flight: claude's full-screen TUI repaints over stderr output mid-stream, so a `_warning_pending` flag is raised and the message is rendered on the next tick where the proxy reports idle (no in-flight requests). Rendering happens at flush time using the current cost so the user sees the latest state, not a stale snapshot from the tick on which the threshold was crossed. Pre-flight check (before claude launches) refuses the launch outright if already over the limit.
+- `BudgetChecker` — daemon thread that scans `.token-usage.ddbya` from the current project and immediate sibling directories every minute, computes USD spend from `MODEL_PRICING`, and fires a one-shot `on_exceeded` callback the first time spend crosses 100% of the limit. Maintains a per-file `(mtime, offset, entries)` cache so each tick only reads bytes appended since the last scan; entries that drop out of the lookback window are pruned. Emits stderr warnings when spend crosses 80/85/90% and each integer percentage from 95–99% (crossing, not landing — spend can jump several points between ticks). On the first tick of a session that starts already past one or more thresholds, fires a single warning at the highest crossed threshold rather than one per threshold below the current pct. At 100%+ the exceeded message is shown instead so the percentage line doesn't duplicate it. Warnings are deferred while requests are in flight: claude's full-screen TUI repaints over stderr output mid-stream, so a `_warning_pending` flag is raised and the message is rendered on the next tick where the proxy reports idle (no in-flight requests). Rendering happens at flush time using the current cost so the user sees the latest state, not a stale snapshot from the tick on which the threshold was crossed. Pre-flight check (before claude launches) refuses the launch outright if already over the limit.
 - `MODEL_PRICING` — module-level dict of Anthropic per-million-token prices, matched by longest model-ID prefix. Unknown `claude-*` IDs fall back to Sonnet pricing and are reported at session end so the user can update ddbya.
 - `parse_args()` — extracts `-o`/`--ollama-model`, `-l`/`--limit`, `-t`/`--tag`, `--last`, and `--list-tags` from argv. Returns `(ollama_model, limit_usd, lookback_days, tags, list_tags, claude_args)`. Validates that `--limit` and `--last` are paired. `-t`/`--tag` can be given multiple times.
-- `collect_tags()` — scans `token-usage.jsonl` in the current project and sibling directories (same scope as `BudgetChecker`), returning all unique tags found. Used by `--list-tags` for shell tab completion of `-t`/`--tag` values.
+- `collect_tags()` — scans `.token-usage.ddbya` in the current project and sibling directories (same scope as `BudgetChecker`), returning all unique tags found. Used by `--list-tags` for shell tab completion of `-t`/`--tag` values.
 - `main()` — parses args, detects `-p`/`--print` for programmatic billing tagging, configures upstream (Ollama if `-o` set, otherwise `ANTHROPIC_BASE_URL` or default), starts proxy and (optionally) `BudgetChecker`. If `--list-tags` is given, prints collected tags and exits. Wires `BudgetChecker.on_exceeded → proxy.budget_exceeded.set`. Runs `claude` via `subprocess.Popen` with inherited stdio. When a budget is set, a watchdog thread waits on `proxy.budget_exceeded`, then `proxy.wait_idle()`, then sends `SIGTERM` (escalating to `SIGKILL` after 30 s) so the model finishes any in-flight responses before claude exits. Prints session summary to stderr on exit.
 
 ## Token extraction
@@ -31,13 +31,13 @@ Uses only Python 3 standard library: `http.server`, `http.client`, `urllib.parse
 
 ## Reporting
 
-`ddbya-report` aggregates `token-usage.jsonl` files across multiple projects.
+`ddbya-report` aggregates `.token-usage.ddbya` files across multiple projects.
 
 ```
 ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...]
 ```
 
-- If the given folder directly contains `token-usage.jsonl`, reports on that project only. Otherwise scans subdirectories recursively for `token-usage.jsonl` files.
+- If the given folder directly contains `.token-usage.ddbya`, reports on that project only. Otherwise scans subdirectories recursively for `.token-usage.ddbya` files.
 - Project name = top-level subfolder under the given root that contains the log file (first path component after root). If the log file is directly in root, uses root's directory name.
 - Aggregates by project, model, programmatic flag, and tags. A Tags column appears whenever any entry has tags.
 - Defaults to last 7 days if no time filter is given.
@@ -58,4 +58,4 @@ The `-o`/`--ollama-model` flag auto-configures: upstream set to `http://<OLLAMA_
 
 - British English spelling in all prose and identifiers.
 - ISO 8601 UTC timestamps for logged data.
-- `./token-usage.jsonl` is project-local runtime data — do not commit it.
+- `./.token-usage.ddbya` is project-local runtime data — do not commit it.

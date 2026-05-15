@@ -13,4 +13,4 @@ __pycache__/
 venv/
 
 # Runtime data
-token-usage.jsonl
+.token-usage.ddbya

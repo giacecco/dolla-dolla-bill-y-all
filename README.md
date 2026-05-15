@@ -58,19 +58,19 @@ projects/                     ← cd here, run ddbya-report . # report all consu
 
 ## Budget limits
 
-`-l`/`--limit <USD>` together with `--last <days>` puts a soft cap on spend across **all sibling projects under the parent directory**, computed from each project's `token-usage.jsonl` using public Anthropic per-model pricing.
+`-l`/`--limit <USD>` together with `--last <days>` puts a soft cap on spend across **all sibling projects under the parent directory**, computed from each project's `.token-usage.ddbya` using public Anthropic per-model pricing.
 
 Behaviour:
 
 - **At launch:** if recent spend is already at or above the limit, ddbya refuses to start the session.
 - **During the session:** spend is re-checked every minute. Warnings are printed to stderr when spend crosses 80%, 85%, 90%, and each integer percentage from 95% upwards (crossing, not landing — spend can jump several points between ticks). If a session starts already past one or more thresholds, a single warning is shown at the highest crossed threshold. Warnings are deferred while a request is in flight (claude's TUI would otherwise repaint over them) and flushed on the next tick where the proxy is idle.
 - **Once 100% is crossed mid-session:** the proxy starts replying to any *new* API call with HTTP 429 (a synthetic Anthropic-style error). Already in-flight requests are allowed to complete normally. Once the in-flight count drops to zero, ddbya sends `SIGTERM` to claude, escalating to `SIGKILL` after 30s if needed.
-- **Unrecognised models:** if your `token-usage.jsonl` history already mentions a Claude model ddbya doesn't know about (e.g. a release newer than this copy), the pre-flight check refuses to launch and points you at the latest version. If a new unknown model appears mid-session (a sibling project logging a release ddbya hasn't seen), ddbya warns, falls back to Sonnet pricing as an approximation, and exits with status 1 at the end of the session.
+- **Unrecognised models:** if your `.token-usage.ddbya` history already mentions a Claude model ddbya doesn't know about (e.g. a release newer than this copy), the pre-flight check refuses to launch and points you at the latest version. If a new unknown model appears mid-session (a sibling project logging a release ddbya hasn't seen), ddbya warns, falls back to Sonnet pricing as an approximation, and exits with status 1 at the end of the session.
 - **Not supported with `-o`/`--ollama-model`** (no public pricing for arbitrary Ollama models).
 
 ## Output
 
-Every API call appends a line to `./token-usage.jsonl` in the current working directory (one file per project):
+Every API call appends a line to `./.token-usage.ddbya` in the current working directory (one file per project):
 
 ```json
 {"input_tokens": 354, "cache_read_input_tokens": 27123, "model": "claude-opus-4-7", "output_tokens": 42, "stream": true, "timestamp": "2026-05-13T14:30:00Z"}
@@ -97,13 +97,13 @@ Session token usage:
 
 ## Reporting
 
-`ddbya-report` aggregates `token-usage.jsonl` files across multiple projects.
+`ddbya-report` aggregates `.token-usage.ddbya` files across multiple projects.
 
 ```sh
 ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json]
 ```
 
-If the given folder directly contains a `token-usage.jsonl` file, it reports on that project only. Otherwise it recursively scans all subdirectories for `token-usage.jsonl` files. Groups usage by top-level subfolder, model, programmatic flag, and tags. Defaults to the last 7 days. `--from` and `--to` can be used together or individually; `--from` without `--to` means "from that date to now". `--last` is mutually exclusive with `--from`/`--to`. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. `--json` outputs compact JSON to stdout instead of the table. Each row's `tags` is an array of strings. Zero dependencies — Python 3 standard library only.
+If the given folder directly contains a `.token-usage.ddbya` file, it reports on that project only. Otherwise it recursively scans all subdirectories for `.token-usage.ddbya` files. Groups usage by top-level subfolder, model, programmatic flag, and tags. Defaults to the last 7 days. `--from` and `--to` can be used together or individually; `--from` without `--to` means "from that date to now". `--last` is mutually exclusive with `--from`/`--to`. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. `--json` outputs compact JSON to stdout instead of the table. Each row's `tags` is an array of strings. Zero dependencies — Python 3 standard library only.
 
 Example filtering with both regex and literal matching:
 
