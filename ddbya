@@ -405,31 +405,26 @@ def parse_args(argv):
     return ollama_model, limit_usd, lookback_days, tags, list_tags, claude_args
 
 
-def collect_tags(project_dir):
-    """Return sorted unique tags from token-usage.jsonl in the current project and sibling directories."""
-    project_dir = Path(project_dir).resolve()
-    parent_dir = project_dir.parent
+def _find_tag_root(start_dir):
+    """Walk up until we find a parent without token-usage.jsonl, return that root."""
+    current = Path(start_dir).resolve()
+    while True:
+        parent = current.parent
+        if parent == current:
+            # Reached filesystem root
+            return current
+        if not (parent / TOKEN_LOG_FILE).exists():
+            return current
+        current = parent
 
-    log_files = []
-    log_file = project_dir / TOKEN_LOG_FILE
-    if log_file.exists():
-        log_files.append(log_file)
 
-    if parent_dir.exists():
-        try:
-            for entry in parent_dir.iterdir():
-                if not entry.is_dir() or entry.resolve() == project_dir:
-                    continue
-                sibling_log = entry / TOKEN_LOG_FILE
-                if sibling_log.exists():
-                    log_files.append(sibling_log)
-        except PermissionError:
-            pass
-
+def _collect_tags_from_dir(root_dir):
+    """Recursively collect tags from all token-usage.jsonl files under root_dir."""
     tags = set()
-    for f in log_files:
+    root = Path(root_dir)
+    for log_file in root.rglob(TOKEN_LOG_FILE):
         try:
-            with open(f, encoding="utf-8") as fh:
+            with open(log_file, encoding="utf-8") as fh:
                 for line in fh:
                     line = line.strip()
                     if not line:
@@ -445,8 +440,13 @@ def collect_tags(project_dir):
                                 tags.add(t)
         except OSError:
             pass
+    return tags
 
-    return sorted(tags)
+
+def collect_tags(project_dir):
+    """Walk up to the nearest ancestor without token-usage.jsonl, then collect all tags recursively downwards."""
+    root = _find_tag_root(project_dir)
+    return sorted(_collect_tags_from_dir(root))
 
 
 # Claude CLI flags that consume the next argv token as their value. Used by
