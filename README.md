@@ -9,7 +9,7 @@ dolla-dolla-bill-y-all is a zero-dependency reverse proxy that intercepts Claude
 ```sh
 # clone and link into your PATH
 git clone https://github.com/giacecco/dolla-dolla-bill-y-all.git
-ln -s "$(pwd)/dolla-dolla-bill-y-all/ddbya"* /usr/local/bin/
+ln -s "$(pwd)/dolla-dolla-bill-y-all/ddbya" "$(pwd)/dolla-dolla-bill-y-all/ddbya-report" /usr/local/bin/
 ```
 
 Requires Python 3. No pip packages needed — standard library only.
@@ -103,24 +103,32 @@ Session token usage:
 ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json]
 ```
 
-If the given folder directly contains a `.token-usage.ddbya` file, it reports on that project only. Otherwise it recursively scans all subdirectories for `.token-usage.ddbya` files. Groups usage by top-level subfolder, model, programmatic flag, and tags. Defaults to the last 7 days. `--from` and `--to` can be used together or individually; `--from` without `--to` means "from that date to now". `--last` is mutually exclusive with `--from`/`--to`. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. `--json` outputs compact JSON to stdout instead of the table. Each row's `tags` is an array of strings. Zero dependencies — Python 3 standard library only.
+If the given folder directly contains a `.token-usage.ddbya` file, it reports on that project only. Otherwise it recursively scans all subdirectories for `.token-usage.ddbya` files. Groups usage by top-level subfolder, model, programmatic flag, and tags. Includes all data by default — pass `--last`, `--from`, or `--to` to filter by date. `--from` and `--to` can be used together or individually; `--from` without `--to` means "from that date to now". `--last` is mutually exclusive with `--from`/`--to`. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. `--json` outputs compact JSON to stdout instead of the table. Each row's `tags` is an array of strings. Zero dependencies — Python 3 standard library only.
 
-Example filtering with both regex and literal matching:
+Example — last 7 days of consumption for this project:
 
 ```sh
-ddbya-report . -t /^Steve/ -t "code review"
+ddbya-report . --last 7
 ```
 
 ```
 Token Usage Report — 2026-05-08 to 2026-05-14
 
 Project                 Model                      Programmatic  Reqs  Input (base)  Cache Read  Cache Create  Total Input  Output Tokens  Cost (USD)  Tags
-──────────────────────  ─────────────────────────  ────────────  ────  ────────────  ──────────  ────────────  ───────────  ─────────────  ──────────  ─────────────────────────────────────────────────
+──────────────────────  ─────────────────────────  ────────────  ────  ────────────  ──────────  ────────────  ───────────  ─────────────  ──────────  ────────────────────────────────────────────────────
+dolla-dolla-bill-y-all  claude-haiku-4-5-20251001  no              63        24,008      67,861        29,128      120,997          2,002       $0.08
+dolla-dolla-bill-y-all  claude-haiku-4-5-20251001  no               4           702           -             -          702             28       $0.00  code review | ddbya core dev
 dolla-dolla-bill-y-all  claude-haiku-4-5-20251001  no               2           347           -             -          347             11       $0.00  code review | ddbya core dev | Steve's tags request
+dolla-dolla-bill-y-all  claude-opus-4-7            no             223        12,947  15,505,366       548,058   16,066,371        103,323      $13.83
+dolla-dolla-bill-y-all  claude-opus-4-7            no              82         6,302   7,557,402       204,112    7,767,816         38,860       $6.06  code review | ddbya core dev
 dolla-dolla-bill-y-all  claude-opus-4-7            no              10         1,043     509,891        70,391      581,325          7,025       $0.88  code review | ddbya core dev | Steve's tags request
-(subtotal)                                                         12         1,390     509,891        70,391      581,672          7,036       $0.88
+dolla-dolla-bill-y-all  claude-sonnet-4-6          no             104         4,740   5,683,220       409,030    6,096,990         28,113       $3.67
+dolla-dolla-bill-y-all  deepseek-v4-pro            no             247    14,400,948           -             -   14,400,948        115,927           -
+dolla-dolla-bill-y-all  deepseek-v4-pro            no             181     7,945,181           -             -    7,945,181         51,676           -  code writing | ddbya core dev
+dolla-dolla-bill-y-all  deepseek-v4-pro            no             114     7,256,808           -             -    7,256,808         29,236           -  code writing | ddbya core dev | Steve's tags request
+(subtotal)                                                       1,030    29,653,026  29,323,740     1,260,719   60,237,485        376,201      $24.51
 
-TOTAL                                                              12         1,390     509,891        70,391      581,672          7,036       $0.88
+TOTAL                                                            1,030    29,653,026  29,323,740     1,260,719   60,237,485        376,201      $24.51
 ```
 
 ## Shell autocompletion
@@ -158,6 +166,9 @@ ddbya
   ├─ runs claude (all args forwarded)
   ├─ proxy relays each request to the real upstream
   │   └─ parses usage from streaming (SSE) and non-streaming responses
+  ├─ (with --limit) budget watchdog scans .token-usage.ddbya every minute
+  │   ├─ warns at 80 / 85 / 90% and each integer % from 95–99
+  │   └─ at 100%: refuses new requests with HTTP 429, then SIGTERMs claude once idle
   └─ on exit: prints summary, exits with claude's return code
 ```
 
