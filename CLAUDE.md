@@ -40,7 +40,7 @@ ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] 
 - If the given folder directly contains `.token-usage.ddbya`, reports on that project only. Otherwise scans subdirectories recursively for `.token-usage.ddbya` files.
 - Project name = top-level subfolder under the given root that contains the log file (first path component after root). If the log file is directly in root, uses root's directory name.
 - Aggregates by project, model, programmatic flag, and tags. A Tags column appears whenever any entry has tags.
-- Defaults to last 7 days if no time filter is given.
+- Includes all data by default. Pass `--last`, `--from`, or `--to` to filter by date.
 - `--from`/`--to` can be used together or individually; `--from` without `--to` means "from that date to now".
 - `-t`/`--tag` filters to entries containing that tag. Can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. Example: `ddbya-report . -t /^Steve/ -t "code review"` matches entries whose tags include one starting with "Steve" AND one exactly "code review".
 - Zero dependencies — Python 3 standard library only.
