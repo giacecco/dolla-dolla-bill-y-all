@@ -125,13 +125,14 @@ TOTAL                                                              12         1,
 
 ## Shell autocompletion
 
-`ddbya` supports tab completion for `-t`/`--tag` values. When you type `ddbya -t <TAB>`, the shell suggests tags already used across your projects (same scope as budget tracking). Completion is case-insensitive — typing `code` will match tags named `Code Review`, `code writing`, etc.
+`ddbya` and `ddbya-report` support tab completion for `-t`/`--tag` values. When you type `ddbya -t <TAB>` or `ddbya-report <folder> -t <TAB>`, the shell suggests tags already used across your projects. Completion is case-insensitive — typing `code` will match tags named `Code Review`, `code writing`, etc.
 
-**zsh** — symlink the completion file into a directory in your `fpath`:
+**zsh** — symlink the completion files into a directory in your `fpath`:
 
 ```sh
 mkdir -p ~/.zsh/completions
 ln -s "$(pwd)/completions/_ddbya" ~/.zsh/completions/_ddbya
+ln -s "$(pwd)/completions/_ddbya-report" ~/.zsh/completions/_ddbya-report
 ```
 
 Then ensure your `~/.zshrc` has:
@@ -141,10 +142,11 @@ fpath=(~/.zsh/completions $fpath)
 autoload -Uz compinit && compinit
 ```
 
-**bash** — source the completion script in your `~/.bashrc`:
+**bash** — source the completion scripts in your `~/.bashrc`:
 
 ```sh
 source /path/to/dolla-dolla-bill-y-all/completions/ddbya.bash
+source /path/to/dolla-dolla-bill-y-all/completions/ddbya-report.bash
 ```
 
 ## How it works
