@@ -146,7 +146,7 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
                 programmatic = "yes" if entry.get("programmatic") else "no"
                 entry_tags = entry.get("tags")
                 if isinstance(entry_tags, list):
-                    entry_tags = sorted(entry_tags)
+                    entry_tags = sorted(entry_tags, key=str.lower)
                 else:
                     entry_tags = []
                 if tag_filters and not set(tag_filters).issubset(entry_tags):
