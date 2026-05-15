@@ -35,6 +35,26 @@ ddbya -t "client-acme" -t "urgent"   # multiple tags per session
 
 With `-o`/`--ollama-model`, the wrapper automatically sets the upstream to `OLLAMA_HOST` (defaults to `127.0.0.1:11434`), configures Ollama auth, and passes `--model` to claude. Without `-o`, the wrapper respects your existing `ANTHROPIC_BASE_URL` and auto-detects HTTP vs HTTPS.
 
+### Directory layout
+
+`--limit` and `--tag` key off a simple directory convention: group each client's projects under a shared parent folder. `ddbya-report` is recursive instead, starting from any folder.
+
+```
+projects/
+├── client-acme/           ← cd here, run ddbya-report . # report all consumption for client-acme 
+│   ├── web-frontend/      ← cd here, run ddbya -t "code review" # launch Claude Code in this project and tag consumption as "code review"
+│   └── api-backend/       ← cd here, run ddbya --limit 20 --last 7 # launch Claude Code and limit spend to 20 USD for client-acme (not just api-backend) this week
+├── client-baker/
+│   ├── mobile-app/
+│   └── data-pipeline/
+└── internal/
+    └── dolla-dolla-bill-y-all/
+```
+
+- **Budget scope** — `--limit` scans the current project and its sibling directories under the same parent. Keep all of a client's projects in one folder and the budget cap applies to that client only.
+- **Tags** — `-t` labels every entry in a session so `ddbya-report` can filter by tag later, even across projects in different parent / client folders, e.g. to see how many tokens I've spent on "code review" across all clients.
+- **Reporting** — point `ddbya-report` at a parent folder to aggregate across all its sub-projects, or at a single project folder to isolate one.
+
 ## Budget limits
 
 `-l`/`--limit <USD>` together with `--last <days>` puts a soft cap on spend across **all sibling projects under the parent directory**, computed from each project's `token-usage.jsonl` using public Anthropic per-model pricing.
@@ -82,7 +102,7 @@ Session token usage:
 ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...]
 ```
 
-If the given folder directly contains a `token-usage.jsonl` file, it reports on that project only. Otherwise it scans immediate subdirectories (one level deep) for `token-usage.jsonl` files. Groups usage by project, model, programmatic flag, and tags. Defaults to the last 7 days. `--from` and `--to` can be used together or individually; `--from` without `--to` means "from that date to now". `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. Zero dependencies — Python 3 standard library only.
+If the given folder directly contains a `token-usage.jsonl` file, it reports on that project only. Otherwise it recursively scans all subdirectories for `token-usage.jsonl` files. Groups usage by top-level subfolder, model, programmatic flag, and tags. Defaults to the last 7 days. `--from` and `--to` can be used together or individually; `--from` without `--to` means "from that date to now". `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. Zero dependencies — Python 3 standard library only.
 
 Example filtering with both regex and literal matching:
 

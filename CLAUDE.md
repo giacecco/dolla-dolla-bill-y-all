@@ -37,8 +37,8 @@ Uses only Python 3 standard library: `http.server`, `http.client`, `urllib.parse
 ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...]
 ```
 
-- If the given folder directly contains `token-usage.jsonl`, reports on that project only. Otherwise scans immediate subdirectories (one level deep).
-- Project name = immediate parent directory containing the log file.
+- If the given folder directly contains `token-usage.jsonl`, reports on that project only. Otherwise scans subdirectories recursively for `token-usage.jsonl` files.
+- Project name = top-level subfolder under the given root that contains the log file (first path component after root). If the log file is directly in root, uses root's directory name.
 - Aggregates by project, model, programmatic flag, and tags. A Tags column appears whenever any entry has tags.
 - Defaults to last 7 days if no time filter is given.
 - `--from`/`--to` can be used together or individually; `--from` without `--to` means "from that date to now".

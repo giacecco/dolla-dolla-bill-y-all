@@ -131,14 +131,14 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
     if direct.exists():
         paths = [direct]
     else:
-        paths = sorted(
-            p for p in (child / "token-usage.jsonl" for child in root.iterdir() if child.is_dir())
-            if p.exists()
-        )
+        paths = sorted(root.rglob("token-usage.jsonl"))
 
     usage = []
     for jsonl_path in paths:
-        project = jsonl_path.parent.name or jsonl_path.parent.resolve().name
+        if jsonl_path.parent == root:
+            project = root.name or root.resolve().name
+        else:
+            project = jsonl_path.relative_to(root).parts[0]
         with open(jsonl_path) as f:
             for line in f:
                 line = line.strip()
