@@ -40,13 +40,14 @@ With `-o`/`--ollama-model`, the wrapper automatically sets the upstream to `OLLA
 `--limit` and `--tag` key off a simple directory convention: group each client's projects under a shared parent folder. `ddbya-report` is recursive instead, starting from any folder.
 
 ```
-projects/
-├── client-acme/           ← cd here, run ddbya-report . # report all consumption for client-acme 
-│   ├── web-frontend/      ← cd here, run ddbya -t "code review" # launch Claude Code in this project and tag consumption as "code review"
-│   └── api-backend/       ← cd here, run ddbya --limit 20 --last 7 # launch Claude Code and limit spend to 20 USD for client-acme (not just api-backend) this week
-├── client-baker/
-│   ├── mobile-app/
-│   └── data-pipeline/
+projects/                     ← cd here, run ddbya-report . # report all consumption, divided by clients vs internal  
+├── clients/                  ← cd here, run ddbya-report . # report all consumption, divided by client
+│   └─── client-acme/         ← cd here, run ddbya-report . # report all consumption for client-acme, divided by project
+│   │  ├── web-frontend/      ← cd here, run ddbya -t "code review" # launch Claude Code in this project and tag consumption as "code review"
+│   │  └── api-backend/       ← cd here, run ddbya --limit 20 --last 7 # launch Claude Code and limit spend to 20 USD for client-acme (not just api-backend) this week
+│   └─── client-baker/
+│      ├── mobile-app/
+│      └── data-pipeline/
 └── internal/
     └── dolla-dolla-bill-y-all/
 ```
