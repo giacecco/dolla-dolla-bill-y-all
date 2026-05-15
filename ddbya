@@ -623,24 +623,36 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             # Relay response status and headers. Never forward
             # Content-Encoding: gzip — the proxy handles decompression
             # and the client should not try to decompress twice.
-            self.send_response(resp.status, resp.reason)
-            for key, value in resp.getheaders():
-                low = key.lower()
-                if low in ("transfer-encoding", "connection", "keep-alive"):
-                    continue
-                if low == "content-encoding" and value.lower() == "gzip":
-                    continue
-                # Drop Content-Length when we will not deliver the exact same
-                # byte count: gzip is decompressed by us, and streaming responses
-                # are relayed chunk-by-chunk so the original length no longer
-                # matches what the client receives.
-                if low == "content-length" and (is_gzip or is_streaming):
-                    continue
-                self.send_header(key, value)
-            self.end_headers()
+            #
+            # The client (claude) may have already closed its socket while we
+            # were waiting on upstream — typically because the user cancelled
+            # the in-flight request from the TUI. The header flush would then
+            # raise BrokenPipeError out of end_headers(). Catch that and keep
+            # going so we still drain upstream and log usage for tokens the
+            # user already paid for.
+            client_alive = True
+            try:
+                self.send_response(resp.status, resp.reason)
+                for key, value in resp.getheaders():
+                    low = key.lower()
+                    if low in ("transfer-encoding", "connection", "keep-alive"):
+                        continue
+                    if low == "content-encoding" and value.lower() == "gzip":
+                        continue
+                    # Drop Content-Length when we will not deliver the exact same
+                    # byte count: gzip is decompressed by us, and streaming responses
+                    # are relayed chunk-by-chunk so the original length no longer
+                    # matches what the client receives.
+                    if low == "content-length" and (is_gzip or is_streaming):
+                        continue
+                    self.send_header(key, value)
+                self.end_headers()
+            except (BrokenPipeError, ConnectionResetError):
+                client_alive = False
+                self.close_connection = True
 
             if is_streaming:
-                self._relay_stream(resp, req_data, is_gzip)
+                self._relay_stream(resp, req_data, is_gzip, client_alive=client_alive)
             else:
                 resp_body = resp.read()
                 if is_gzip and resp_body:
@@ -652,13 +664,22 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                         # bytes through unchanged so the client sees the same
                         # error the upstream sent.
                         pass
-                self.wfile.write(resp_body)
+                if client_alive:
+                    try:
+                        self.wfile.write(resp_body)
+                    except (BrokenPipeError, ConnectionResetError):
+                        self.close_connection = True
                 self._extract_usage_nonstream(resp_body)
         finally:
             conn.close()
 
-    def _relay_stream(self, resp, req_data, is_gzip):
-        """Relay SSE events chunk by chunk, parsing usage inline without buffering the full body."""
+    def _relay_stream(self, resp, req_data, is_gzip, client_alive=True):
+        """Relay SSE events chunk by chunk, parsing usage inline without buffering the full body.
+
+        client_alive starts False when the response headers couldn't be
+        delivered (client dropped during the upstream wait). In that case we
+        still drain upstream and parse usage so the session log stays correct.
+        """
         if is_gzip:
             decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
 
@@ -702,8 +723,8 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
 
         # Track whether the client is still reading. A disconnect mid-stream
         # should not crash the handler; keep parsing usage from upstream so the
-        # session totals are still logged.
-        client_alive = True
+        # session totals are still logged. (Caller may already have flipped this
+        # to False if header delivery failed before we got here.)
         pending = b""
         while True:
             chunk = resp.read(4096)
