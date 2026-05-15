@@ -308,11 +308,12 @@ class BudgetChecker:
 
 
 def parse_args(argv):
-    """Extract wrapper-specific flags, return (ollama_model_or_none, limit_usd_or_none, lookback_days_or_none, tags, remaining_args_for_claude)."""
+    """Extract wrapper-specific flags, return (ollama_model_or_none, limit_usd_or_none, lookback_days_or_none, tags, list_tags, remaining_args_for_claude)."""
     ollama_model = None
     limit_usd = None
     lookback_days = None
     tags = []
+    list_tags = False
     claude_args = []
     i = 0
     while i < len(argv):
@@ -372,6 +373,10 @@ def parse_args(argv):
             tags.append(argv[i + 1])
             i += 2
             continue
+        elif arg == "--list-tags":
+            list_tags = True
+            i += 1
+            continue
         claude_args.append(arg)
         i += 1
 
@@ -385,7 +390,51 @@ def parse_args(argv):
         print("error: -l/--limit is not supported with -o/--ollama-model", file=sys.stderr)
         sys.exit(1)
 
-    return ollama_model, limit_usd, lookback_days, tags, claude_args
+    return ollama_model, limit_usd, lookback_days, tags, list_tags, claude_args
+
+
+def collect_tags(project_dir):
+    """Return sorted unique tags from token-usage.jsonl in the current project and sibling directories."""
+    project_dir = Path(project_dir).resolve()
+    parent_dir = project_dir.parent
+
+    log_files = []
+    log_file = project_dir / TOKEN_LOG_FILE
+    if log_file.exists():
+        log_files.append(log_file)
+
+    if parent_dir.exists():
+        try:
+            for entry in parent_dir.iterdir():
+                if not entry.is_dir() or entry.resolve() == project_dir:
+                    continue
+                sibling_log = entry / TOKEN_LOG_FILE
+                if sibling_log.exists():
+                    log_files.append(sibling_log)
+        except PermissionError:
+            pass
+
+    tags = set()
+    for f in log_files:
+        try:
+            with open(f) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    entry_tags = entry.get("tags", [])
+                    if isinstance(entry_tags, list):
+                        for t in entry_tags:
+                            if isinstance(t, str):
+                                tags.add(t)
+        except OSError:
+            pass
+
+    return sorted(tags)
 
 
 # Claude CLI flags that consume the next argv token as their value. Used by
@@ -797,7 +846,12 @@ def format_summary(input_tokens, output_tokens, cache_read, cache_create, reques
 
 
 def main():
-    ollama_model, limit_usd, lookback_days, tags, claude_args = parse_args(sys.argv[1:])
+    ollama_model, limit_usd, lookback_days, tags, list_tags, claude_args = parse_args(sys.argv[1:])
+
+    if list_tags:
+        for tag in collect_tags(Path.cwd()):
+            print(tag)
+        sys.exit(0)
 
     if ollama_model:
         ollama_host = os.environ.get("OLLAMA_HOST", OLLAMA_DEFAULT_HOST)

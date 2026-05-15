@@ -102,6 +102,30 @@ dolla-dolla-bill-y-all  claude-opus-4-7            no              10         1,
 TOTAL                                                              12         1,390     509,891        70,391      581,672          7,036       $0.88
 ```
 
+## Shell autocompletion
+
+`ddbya` supports tab completion for `-t`/`--tag` values. When you type `ddbya -t <TAB>`, the shell suggests tags already used across your projects (same scope as budget tracking). Completion is case-insensitive — typing `code` will match tags named `Code Review`, `code writing`, etc.
+
+**zsh** — symlink the completion file into a directory in your `fpath`:
+
+```sh
+mkdir -p ~/.zsh/completions
+ln -s "$(pwd)/completions/_ddbya" ~/.zsh/completions/_ddbya
+```
+
+Then ensure your `~/.zshrc` has:
+
+```zsh
+fpath=(~/.zsh/completions $fpath)
+autoload -Uz compinit && compinit
+```
+
+**bash** — source the completion script in your `~/.bashrc`:
+
+```sh
+source /path/to/dolla-dolla-bill-y-all/completions/ddbya.bash
+```
+
 ## How it works
 
 ```
@@ -115,3 +139,31 @@ ddbya
 ```
 
 Token extraction handles the Anthropic API (`message_start` for input tokens, `message_delta` for output tokens), Ollama (`message_delta` for both), and transparently decompresses gzip-encoded responses from both APIs.
+
+## Disclaimer
+
+This software has not been thoroughly tested. It is provided in the hope that it will be useful, but without any warranty. Use at your own risk. The authors accept no liability for any consequences arising from its use, including but not limited to incorrect cost tracking, budget enforcement failures, or any other misbehaviour.
+
+## Licence
+
+MIT License
+
+Copyright (c) 2026 Gianfranco Cecconi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

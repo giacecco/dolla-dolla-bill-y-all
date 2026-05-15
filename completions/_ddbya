@@ -1,0 +1,18 @@
+#compdef ddbya
+#
+# Install by adding this directory to your fpath:
+#   fpath=($(pwd)/completions $fpath)
+# Or copy/symlink into a directory already in fpath:
+#   ln -s "$(pwd)/completions/_ddbya" /usr/local/share/zsh/site-functions/_ddbya
+
+_ddbya() {
+  local -a tags
+  case $words[-2] in
+    -t|--tag)
+      tags=(${(f)"$($words[1] --list-tags 2>/dev/null)"})
+      compadd -M 'm:{a-zA-Z}={A-Za-z}' -a tags
+      ;;
+  esac
+}
+
+_ddbya "$@"
