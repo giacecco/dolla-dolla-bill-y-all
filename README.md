@@ -9,7 +9,7 @@ dolla-dolla-bill-y-all is a zero-dependency reverse proxy that intercepts Claude
 ```sh
 # clone and link into your PATH
 git clone https://github.com/giacecco/dolla-dolla-bill-y-all.git
-ln -s "$(pwd)/dolla-dolla-bill-y-all/ddbya" /usr/local/bin/ddbya
+ln -s "$(pwd)/dolla-dolla-bill-y-all/ddbya"* /usr/local/bin/
 ```
 
 Requires Python 3. No pip packages needed — standard library only.
