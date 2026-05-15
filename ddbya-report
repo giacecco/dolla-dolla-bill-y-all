@@ -3,7 +3,7 @@
 Aggregate token usage across multiple Claude Code projects.
 
 Usage:
-    ddbya-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...]
+    ddbya-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json]
 
 Zero dependencies — Python 3 standard library only.
 """
@@ -45,7 +45,7 @@ def parse_args():
     if not root.is_dir():
         sys.exit(f"Not a directory: {root}")
 
-    params = {"root": root, "last": None, "from": None, "to": None, "tags": []}
+    params = {"root": root, "last": None, "from": None, "to": None, "tags": [], "json": False}
 
     i = 1
     while i < len(args):
@@ -74,6 +74,9 @@ def parse_args():
                 sys.exit("error: -t/--tag requires a value")
             params["tags"].append(args[i + 1])
             i += 2
+        elif args[i] == "--json":
+            params["json"] = True
+            i += 1
         else:
             sys.exit(f"Unknown argument: {args[i]}")
 
@@ -164,7 +167,6 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
                     for pat in tag_filters
                 ):
                     continue
-                tag_str = " | ".join(entry_tags) if entry_tags else ""
                 inp = entry.get("input_tokens", 0)
                 out = entry.get("output_tokens", 0)
                 cr = entry.get("cache_read_input_tokens", 0)
@@ -173,7 +175,7 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
                     "project": project,
                     "model": model,
                     "programmatic": programmatic,
-                    "tags": tag_str,
+                    "tags": entry_tags,
                     "input_tokens": inp,
                     "output_tokens": out,
                     "cache_read": cr,
@@ -185,7 +187,7 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
 
 
 def aggregate(entries):
-    key = lambda e: (e["project"], e["model"], e["programmatic"], e["tags"])
+    key = lambda e: (e["project"], e["model"], e["programmatic"], tuple(e["tags"]))
     groups = defaultdict(lambda: {"input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_create": 0, "cost": 0.0, "requests": 0})
 
     for e in entries:
@@ -199,12 +201,12 @@ def aggregate(entries):
         g["requests"] += e["requests"]
 
     result = []
-    for (project, model, programmatic, tag_str), g in sorted(groups.items()):
+    for (project, model, programmatic, tags_tuple), g in sorted(groups.items()):
         result.append({
             "project": project,
             "model": model,
             "programmatic": programmatic,
-            "tags": tag_str,
+            "tags": list(tags_tuple),
             **g,
         })
     return result
@@ -233,11 +235,12 @@ def _col_widths(rows):
         return max(len(header), max((len(v) for v in values), default=0))
 
     show_tags = any(r.get("tags") for r in rows)
+    _join = lambda t: " | ".join(t) if t else ""
 
     projects = [r["project"] for r in rows] + extra_labels
     models = [r["model"] for r in rows] + [""]
     programmatic = [r["programmatic"] for r in rows] + [""]
-    all_tags = [r["tags"] for r in rows] + [""]
+    all_tags = [_join(r["tags"]) for r in rows] + [""]
     reqs = [fmt(r["requests"]) for r in rows]
     inputs = [fmt(r["input_tokens"]) for r in rows]
     totals = [fmt(r["input_tokens"] + r["cache_read"] + r["cache_create"]) for r in rows]
@@ -276,6 +279,7 @@ def _build_row(values, cols_by_name):
 
 
 def report(rows, from_date, to_date):
+    _join = lambda t: " | ".join(t) if t else ""
     to_display = to_date - timedelta(days=1)
     if (to_display - from_date).days < 1:
         header = f"Token Usage Report — {from_date.strftime('%Y-%m-%d')}"
@@ -338,7 +342,7 @@ def report(rows, from_date, to_date):
             (fmt_cost(r["cost"]), "Cost (USD)"),
         ]
         if show_tags:
-            vals.append((r["tags"], "Tags"))
+            vals.append((_join(r["tags"]), "Tags"))
         print(_build_row(vals, cols_by_name))
 
         proj_input += r["input_tokens"]
@@ -374,7 +378,16 @@ def main():
     from_date, to_date = resolve_window(params)
     entries = collect_entries(params["root"], from_date, to_date, tag_filters=params["tags"])
     rows = aggregate(entries)
-    report(rows, from_date, to_date)
+    if params["json"]:
+        output = {
+            "from": from_date.strftime("%Y-%m-%d"),
+            "to": (to_date - timedelta(days=1)).strftime("%Y-%m-%d"),
+            "rows": rows,
+        }
+        json.dump(output, sys.stdout, separators=(",", ":"))
+        print()
+    else:
+        report(rows, from_date, to_date)
 
 
 if __name__ == "__main__":
