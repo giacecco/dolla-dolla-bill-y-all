@@ -65,7 +65,7 @@ Behaviour:
 - **At launch:** if recent spend is already at or above the limit, ddbya refuses to start the session.
 - **During the session:** spend is re-checked every minute. Warnings are printed to stderr when spend crosses 80%, 85%, 90%, and each integer percentage from 95% upwards (crossing, not landing — spend can jump several points between ticks). If a session starts already past one or more thresholds, a single warning is shown at the highest crossed threshold. Warnings are deferred while a request is in flight (claude's TUI would otherwise repaint over them) and flushed on the next tick where the proxy is idle.
 - **Once 100% is crossed mid-session:** the proxy starts replying to any *new* API call with HTTP 429 (a synthetic Anthropic-style error). Already in-flight requests are allowed to complete normally. Once the in-flight count drops to zero, ddbya sends `SIGTERM` to claude, escalating to `SIGKILL` after 30s if needed.
-- **Unrecognised models:** if your `token-usage.jsonl` history mentions a Claude model ddbya doesn't know about (e.g. a release newer than this copy), ddbya warns, falls back to Sonnet pricing as an approximation, and exits with status 1 at the end of the session.
+- **Unrecognised models:** if your `token-usage.jsonl` history already mentions a Claude model ddbya doesn't know about (e.g. a release newer than this copy), the pre-flight check refuses to launch and points you at the latest version. If a new unknown model appears mid-session (a sibling project logging a release ddbya hasn't seen), ddbya warns, falls back to Sonnet pricing as an approximation, and exits with status 1 at the end of the session.
 - **Not supported with `-o`/`--ollama-model`** (no public pricing for arbitrary Ollama models).
 
 ## Output

@@ -304,7 +304,11 @@ class BudgetChecker:
                 if model not in self._warned_models:
                     self._warned_models.add(model)
                     should_warn = True
-            if should_warn:
+            # Suppress the inline warning during the pre-flight check: main()
+            # exits before claude is launched if unknown models are present,
+            # so the "session will finish" wording would be a lie. After the
+            # first check, claude is running and the wording is accurate.
+            if should_warn and self._first_check_done.is_set():
                 print(
                     f"\nUnrecognised Claude model '{model}' — session will finish but ddbya will then exit.\n"
                     f"Download the latest version:\n"
