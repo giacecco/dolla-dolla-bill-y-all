@@ -452,38 +452,9 @@ def collect_tags(project_dir):
     return sorted(_collect_tags_from_dir(root))
 
 
-# Claude CLI flags that consume the next argv token as their value. Used by
-# is_programmatic_invocation to avoid misreading "-p"/"--print" when it appears
-# as the value of a preceding flag (e.g. --model -p).
-_CLAUDE_VALUE_FLAGS = frozenset({
-    "--model",
-    "--add-dir",
-    "--allowedTools",
-    "--disallowedTools",
-    "--mcp-config",
-    "--append-system-prompt",
-    "--permission-mode",
-    "--permission-prompt-tool",
-    "--session-id",
-    "--agents",
-    "--setting-sources",
-    "--input-format",
-    "--output-format",
-})
-
-
 def is_programmatic_invocation(claude_args):
-    """True if -p/--print appears as a flag (not as the value of another flag)."""
-    skip_next = False
-    for arg in claude_args:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg in ("-p", "--print"):
-            return True
-        if arg in _CLAUDE_VALUE_FLAGS:
-            skip_next = True
-    return False
+    """True if -p/--print appears in the argument list."""
+    return any(arg in ("-p", "--print") for arg in claude_args)
 
 
 class TokenLogger:
