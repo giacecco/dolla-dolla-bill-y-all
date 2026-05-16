@@ -3,7 +3,7 @@
 Aggregate token usage across multiple Claude Code projects.
 
 Usage:
-    ddbya-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]
+    ddbya-report ROOT_FOLDER [--last N | --today] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]
     ddbya-report ROOT_FOLDER -t <filter> -t +<tag>   add tags to matching entries
     ddbya-report ROOT_FOLDER -t <filter> -t -<tag>   remove tags from matching entries
 
@@ -46,14 +46,14 @@ MODEL_PRICING, _DEFAULT_PRICING, _MODEL_PRICING_PREFIXES = _load_pricing_from_dd
 def parse_args():
     args = sys.argv[1:]
     if not args:
-        sys.exit("Usage: ddbya-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]\n"
+        sys.exit("Usage: ddbya-report ROOT_FOLDER [--last N | --today] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]\n"
                  "       ddbya-report ROOT_FOLDER -t +/-TAG  (retag, in-place)")
 
     root = Path(args[0])
     if not root.is_dir():
         sys.exit(f"Not a directory: {root}")
 
-    params = {"root": root, "last": None, "from": None, "to": None,
+    params = {"root": root, "last": None, "from": None, "to": None, "today": False,
               "tags": [], "add_tags": [], "remove_tags": [], "json": False, "csv": False}
 
     i = 1
@@ -78,6 +78,9 @@ def parse_args():
                 sys.exit(f"Invalid --to date (expected YYYY-MM-DD): {args[i + 1]}")
             params["to"] = args[i + 1]
             i += 2
+        elif args[i] == "--today":
+            params["today"] = True
+            i += 1
         elif args[i] in ("-t", "--tag"):
             if i + 1 >= len(args):
                 sys.exit("error: -t/--tag requires a value")
@@ -104,6 +107,8 @@ def parse_args():
         else:
             sys.exit(f"Unknown argument: {args[i]}")
 
+    if params["today"] and (params["last"] is not None or params["from"] or params["to"]):
+        sys.exit("error: --today cannot be combined with --last, --from, or --to")
     if params["last"] is not None and (params["from"] or params["to"]):
         sys.exit("error: --last cannot be combined with --from or --to")
     if params["json"] and params["csv"]:
@@ -116,6 +121,10 @@ def parse_args():
 
 def resolve_window(params):
     now = datetime.now(timezone.utc)
+
+    if params["today"]:
+        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return today, today + timedelta(days=1)
 
     if params["to"]:
         to_date = datetime.strptime(params["to"], "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
