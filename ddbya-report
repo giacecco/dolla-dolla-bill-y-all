@@ -4,8 +4,11 @@ Aggregate token usage across multiple Claude Code projects.
 
 Usage:
     ddbya-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]
+    ddbya-report ROOT_FOLDER -t <filter> -t +<tag>   add tags to matching entries
+    ddbya-report ROOT_FOLDER -t <filter> -t -<tag>   remove tags from matching entries
 
 Includes all data by default. Pass --last, --from, or --to to filter by date.
+Retagging with -t +/- modifies .token-usage.ddbya files in-place.
 
 Zero dependencies — Python 3 standard library only.
 """
@@ -42,13 +45,15 @@ MODEL_PRICING, _DEFAULT_PRICING, _MODEL_PRICING_PREFIXES = _load_pricing_from_dd
 def parse_args():
     args = sys.argv[1:]
     if not args:
-        sys.exit("Usage: ddbya-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]")
+        sys.exit("Usage: ddbya-report ROOT_FOLDER [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]\n"
+                 "       ddbya-report ROOT_FOLDER -t +/-TAG  (retag, in-place)")
 
     root = Path(args[0])
     if not root.is_dir():
         sys.exit(f"Not a directory: {root}")
 
-    params = {"root": root, "last": None, "from": None, "to": None, "tags": [], "json": False, "csv": False}
+    params = {"root": root, "last": None, "from": None, "to": None,
+              "tags": [], "add_tags": [], "remove_tags": [], "json": False, "csv": False}
 
     i = 1
     while i < len(args):
@@ -75,7 +80,19 @@ def parse_args():
         elif args[i] in ("-t", "--tag"):
             if i + 1 >= len(args):
                 sys.exit("error: -t/--tag requires a value")
-            params["tags"].append(args[i + 1])
+            val = args[i + 1]
+            if val.startswith("+") and not (val.startswith("/") and val.endswith("/")):
+                tag = val[1:]
+                if not tag:
+                    sys.exit("error: -t/+ requires a tag name")
+                params["add_tags"].append(tag)
+            elif val.startswith("-") and not (val.startswith("/") and val.endswith("/")):
+                tag = val[1:]
+                if not tag:
+                    sys.exit("error: -t/- requires a tag name")
+                params["remove_tags"].append(tag)
+            else:
+                params["tags"].append(val)
             i += 2
         elif args[i] == "--json":
             params["json"] = True
@@ -90,6 +107,8 @@ def parse_args():
         sys.exit("error: --last cannot be combined with --from or --to")
     if params["json"] and params["csv"]:
         sys.exit("error: --json and --csv are mutually exclusive")
+    if (params["add_tags"] or params["remove_tags"]) and (params["json"] or params["csv"]):
+        sys.exit("error: retagging (-t +/-) cannot be combined with --json or --csv")
 
     return params
 
@@ -195,6 +214,84 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
                     "requests": 1,
                 })
     return usage
+
+
+def retag(root, from_date, to_date, tag_filters, add_tags, remove_tags):
+    """Modify tags in .token-usage.ddbya files in-place.
+
+    Returns (modified_entries, modified_files).
+    """
+    direct = root / ".token-usage.ddbya"
+    if direct.exists():
+        paths = [direct]
+    else:
+        paths = sorted(root.rglob(".token-usage.ddbya"))
+
+    total_modified = 0
+    files_modified = 0
+
+    for jsonl_path in paths:
+        modified = False
+        lines = []
+        with open(jsonl_path, encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped:
+                    lines.append(line)
+                    continue
+                try:
+                    entry = json.loads(stripped)
+                    ts = datetime.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                except (json.JSONDecodeError, KeyError, ValueError):
+                    lines.append(line)
+                    continue
+
+                if from_date is not None and not (from_date <= ts < to_date):
+                    lines.append(line)
+                    continue
+
+                entry_tags = entry.get("tags")
+                had_tags = isinstance(entry_tags, list)
+                if had_tags:
+                    entry_tags = sorted(entry_tags, key=str.lower)
+                else:
+                    entry_tags = []
+
+                if tag_filters and not all(
+                    any(_match_tag(pat, tag) for tag in entry_tags)
+                    for pat in tag_filters
+                ):
+                    lines.append(line)
+                    continue
+
+                before = list(entry_tags)
+
+                for t in add_tags:
+                    if t not in entry_tags:
+                        entry_tags.append(t)
+
+                entry_tags = [t for t in entry_tags if not any(
+                    _match_tag(pat, t) for pat in remove_tags
+                )]
+
+                if entry_tags == before:
+                    lines.append(line)
+                    continue
+
+                if entry_tags or had_tags:
+                    entry["tags"] = entry_tags
+                elif "tags" in entry:
+                    del entry["tags"]
+                lines.append(json.dumps(entry, sort_keys=True) + "\n")
+                total_modified += 1
+                modified = True
+
+        if modified:
+            with open(jsonl_path, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+            files_modified += 1
+
+    return total_modified, files_modified
 
 
 def aggregate(entries):
@@ -414,6 +511,13 @@ def csv_report(rows):
 def main():
     params = parse_args()
     from_date, to_date = resolve_window(params)
+
+    if params["add_tags"] or params["remove_tags"]:
+        n, files = retag(params["root"], from_date, to_date,
+                         params["tags"], params["add_tags"], params["remove_tags"])
+        print(f"Retagged {n} entr{'y' if n == 1 else 'ies'} across {files} file(s).")
+        return
+
     entries = collect_entries(params["root"], from_date, to_date, tag_filters=params["tags"])
     rows = aggregate(entries)
     if params["json"]:

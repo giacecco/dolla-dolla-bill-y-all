@@ -43,6 +43,11 @@ ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] 
 - Includes all data by default. Pass `--last`, `--from`, or `--to` to filter by date.
 - `--from`/`--to` can be used together or individually; `--from` without `--to` means "from that date to now".
 - `-t`/`--tag` filters to entries containing that tag. Can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. Example: `ddbya-report . -t /^Steve/ -t "code review"` matches entries whose tags include one starting with "Steve" AND one exactly "code review".
+- `-t`/`--tag` with `+`/`-` prefix triggers retagging mode instead of reporting:
+  - `-t +tagname` adds "tagname" to all matching entries.
+  - `-t -tagname` removes "tagname" from all matching entries. Wrap in `/ /` for regex: `-t -/^Steve/`.
+  - Retagging modifies `.token-usage.ddbya` files in-place. Cannot be combined with `--json`/`--csv`.
+  - Example: `ddbya-report . -t foobar -t +hello` adds "hello" to every entry that has tag "foobar".
 - Zero dependencies — Python 3 standard library only.
 - Pricing (`MODEL_PRICING`, default, prefix list) is loaded at startup from the sibling `ddbya` file via `importlib.machinery.SourceFileLoader`, so the two scripts share a single source of truth. Both must be installed in the same directory.
 
