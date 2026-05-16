@@ -392,6 +392,9 @@ def parse_args(argv):
         claude_args.append(arg)
         i += 1
 
+    if list_tags:
+        return ollama_model, limit_usd, lookback_days, tags, list_tags, claude_args
+
     if limit_usd is not None and lookback_days is None:
         print("error: --limit requires --last <days>", file=sys.stderr)
         sys.exit(1)
@@ -490,7 +493,11 @@ class TokenLogger:
         self._log_path = Path(log_path)
         self._lock = threading.Lock()
         self.session_entries = []
-        self._file = open(self._log_path, "a", encoding="utf-8")
+        try:
+            self._file = open(self._log_path, "a", encoding="utf-8")
+        except OSError as exc:
+            print(f"error: cannot open token log {self._log_path}: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     def log(self, entry):
         entry = {**entry, "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
@@ -577,6 +584,9 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             pass
 
     def _forward(self, method):
+        # TOCTOU: the budget could become exceeded between is_set() and
+        # begin_request(), allowing one request to slip through. This is
+        # intentional — budget enforcement is best-effort, not a hard stop.
         if self.proxy is not None and self.proxy.budget_exceeded.is_set():
             self._refuse_budget_exceeded()
             return
@@ -589,7 +599,9 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                 self.proxy.end_request()
 
     def _do_forward(self, method):
-        # Read the request body
+        # Read the request body. Only Content-Length bodies are supported;
+        # chunked transfer-encoding requests carry no Content-Length and would
+        # forward an empty body. Claude Code does not send chunked requests.
         content_length = int(self.headers.get("Content-Length", 0))
         req_body = self.rfile.read(content_length) if content_length else b""
 
@@ -861,6 +873,8 @@ class ReverseProxy:
             self._server.server_close()
 
     def _build_handler(self):
+        # http.server instantiates handlers with no constructor args, so
+        # dependencies are injected via class attributes on a fresh subclass.
         proxy = self
 
         class BoundHandler(ReverseProxyHandler):

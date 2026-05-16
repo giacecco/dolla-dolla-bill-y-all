@@ -14,6 +14,7 @@ Zero dependencies — Python 3 standard library only.
 """
 
 import sys
+import os
 import csv
 import json
 import re
@@ -172,8 +173,12 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
             project = root.name or root.resolve().name
         else:
             project = jsonl_path.relative_to(root).parts[0]
-        with open(jsonl_path, encoding="utf-8") as f:
-            for line in f:
+        try:
+            fh = open(jsonl_path, encoding="utf-8")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
                 line = line.strip()
                 if not line:
                     continue
@@ -287,8 +292,10 @@ def retag(root, from_date, to_date, tag_filters, add_tags, remove_tags):
                 modified = True
 
         if modified:
-            with open(jsonl_path, "w", encoding="utf-8") as f:
+            tmp_path = jsonl_path.with_name(jsonl_path.name + ".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 f.writelines(lines)
+            os.replace(tmp_path, jsonl_path)
             files_modified += 1
 
     return total_modified, files_modified
@@ -336,6 +343,8 @@ def _col_widths(rows):
     """Compute column widths from data so long values never silently truncate."""
     extra_labels = ["(subtotal)", "TOTAL"]
 
+    # lw returns a negative width (left-aligned); rw returns positive (right-aligned).
+    # _build_row checks the sign to choose the format spec.
     def lw(header, values):
         return -(max(len(header), max((len(v) for v in values), default=0)))
 
@@ -523,7 +532,7 @@ def main():
     if params["json"]:
         output = {
             "from": from_date.strftime("%Y-%m-%d") if from_date else None,
-            "to": (to_date - timedelta(days=1)).strftime("%Y-%m-%d"),
+            "to": (to_date - timedelta(days=1)).strftime("%Y-%m-%d") if params["to"] else None,
             "rows": rows,
         }
         json.dump(output, sys.stdout, separators=(",", ":"))
