@@ -68,7 +68,7 @@ ddbya --pricing          # fetch live pricing, then start the session
 
 If the live fetch fails or returns unparseable output, ddbya exits — the session does not launch, and any existing `.pricing.ddbya` is left untouched. Run without `--pricing` to fall back to the embedded data silently.
 
-`.pricing.ddbya` is project-local runtime data — it is listed in `.gitignore` and not committed.
+`.pricing.ddbya` is committed to the repository so the team shares a common pricing baseline without each member needing to bootstrap or fetch it independently.
 
 **Price-change dates are approximated.** Anthropic does not publish the date on which each price tier became effective, so ddbya cannot know when a tariff actually changed. When a fetch reveals that a model's price has changed since the last fetch, ddbya seals the old record at *yesterday* and starts the new record from *today* — even if the real change happened weeks earlier. The practical consequence: log entries between the actual change date and the fetch date are priced at the *old* rate (because the old record's `to` field still covers them). If you fetch frequently this drift is small; if you let pricing data go stale for months, entries in that window may be mispriced. Fetch sooner if you suspect Anthropic has revised tariffs.
 

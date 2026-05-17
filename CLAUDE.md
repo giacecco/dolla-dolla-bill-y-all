@@ -67,4 +67,4 @@ The `-o`/`--ollama-model` flag auto-configures: upstream set to `http://<OLLAMA_
 
 - British English spelling in all prose and identifiers.
 - ISO 8601 UTC timestamps for logged data.
-- `./.token-usage.ddbya` and `./.pricing.ddbya` are project-local runtime data — do not commit them.
+- `./.token-usage.ddbya` is project-local runtime data — do not commit it. `./.pricing.ddbya` is committed so the team shares a common pricing baseline.
