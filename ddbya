@@ -199,6 +199,19 @@ def _merge_pricing_records(existing, fetched, today_str):
 
 def _fetch_pricing():
     """Run claude -p to fetch current Anthropic pricing. Returns list of dicts or None."""
+    stop_spinner = threading.Event()
+
+    def _spinner():
+        frames = "⣾⣽⣻⢿⡿⣟⣯⣷"
+        msg = "ddbya: fetching pricing from anthropic.com/pricing"
+        i = 0
+        while not stop_spinner.wait(0.1):
+            print(f"\r{frames[i % len(frames)]} {msg}…", end="", file=sys.stderr, flush=True)
+            i += 1
+        print(f"\r\033[K", end="", file=sys.stderr, flush=True)
+
+    spin_thread = threading.Thread(target=_spinner, daemon=True)
+    spin_thread.start()
     try:
         result = subprocess.run(
             ["claude", "-p", "--model", _PRICING_FETCH_MODEL, _PRICING_FETCH_PROMPT],
@@ -207,11 +220,18 @@ def _fetch_pricing():
             timeout=60,
         )
     except FileNotFoundError:
+        stop_spinner.set()
+        spin_thread.join()
         print("ddbya: 'claude' not found; cannot fetch pricing.", file=sys.stderr)
         return None
     except subprocess.TimeoutExpired:
+        stop_spinner.set()
+        spin_thread.join()
         print("ddbya: pricing fetch timed out after 60s.", file=sys.stderr)
         return None
+    finally:
+        stop_spinner.set()
+        spin_thread.join()
 
     if result.returncode != 0:
         print(f"ddbya: pricing fetch exited {result.returncode}.", file=sys.stderr)
