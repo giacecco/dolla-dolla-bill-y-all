@@ -46,9 +46,16 @@ OLLAMA_DEFAULT_HOST = "127.0.0.1:11434"
 
 _PRICING_FETCH_MODEL = "claude-haiku-4-5-20251001"
 _PRICING_FETCH_PROMPT = (
-    "Search the web for current Anthropic API pricing at https://www.anthropic.com/pricing "
-    "for all Claude models. Output ONLY a JSON array of objects, one per model, with fields: "
-    'model_prefix (string, e.g. "claude-opus-4-7"), '
+    "Search the web for Anthropic API pricing for ALL Claude models, including "
+    "current flagship models AND legacy / deprecated / retired models that are "
+    "still listed (e.g. Opus 4.5, Opus 4.1, Opus 4, Sonnet 4.5, Sonnet 4, "
+    "Sonnet 3.7, Haiku 3.5, Haiku 3). Check https://www.anthropic.com/pricing "
+    "and https://docs.claude.com/en/docs/about-claude/pricing for the full list. "
+    "Different model generations have different prices (e.g. Opus 4.1 is "
+    "$15/$75 per million while Opus 4.5+ is $5/$25), so do not assume current "
+    "flagship pricing applies to older models. Output ONLY a JSON array of "
+    "objects, one per model, with fields: "
+    'model_prefix (string, e.g. "claude-opus-4-7", "claude-opus-4-1", "claude-haiku-3-5"), '
     "input (float, USD per million input tokens), "
     "output (float, USD per million output tokens), "
     "cache_read (float, USD per million cached read tokens), "
@@ -214,10 +221,10 @@ def _fetch_pricing():
     spin_thread.start()
     try:
         result = subprocess.run(
-            ["claude", "-p", "--model", _PRICING_FETCH_MODEL, _PRICING_FETCH_PROMPT],
+            ["claude", "-p", "--tools", "WebSearch", "--model", _PRICING_FETCH_MODEL, _PRICING_FETCH_PROMPT],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=180,
         )
     except FileNotFoundError:
         stop_spinner.set()
@@ -227,7 +234,7 @@ def _fetch_pricing():
     except subprocess.TimeoutExpired:
         stop_spinner.set()
         spin_thread.join()
-        print("ddbya: pricing fetch timed out after 60s.", file=sys.stderr)
+        print("ddbya: pricing fetch timed out after 180s.", file=sys.stderr)
         return None
     finally:
         stop_spinner.set()
@@ -238,14 +245,51 @@ def _fetch_pricing():
         return None
 
     text = result.stdout.strip()
-    # Try direct parse first; fall back to extracting a JSON array from prose.
-    for candidate in (text, text[text.find("["):text.rfind("]") + 1] if "[" in text else ""):
-        try:
-            data = json.loads(candidate)
-            if isinstance(data, list):
-                return data
-        except (json.JSONDecodeError, ValueError):
-            pass
+
+    # Try direct parse first
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Walk the text scanning for balanced JSON arrays (skips brackets in strings,
+    # ignores markdown fences, sources lists, and other prose around the array).
+    start = 0
+    while True:
+        start = text.find("[", start)
+        if start == -1:
+            break
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(text)):
+            c = text[i]
+            if escape:
+                escape = False
+                continue
+            if c == "\\":
+                escape = True
+                continue
+            if c == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if c == "[":
+                depth += 1
+            elif c == "]":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        data = json.loads(text[start:i + 1])
+                        if isinstance(data, list):
+                            return data
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    break
+        start += 1
 
     print("ddbya: pricing fetch returned unparseable output.", file=sys.stderr)
     return None
@@ -292,8 +336,11 @@ def maybe_update_pricing(project_dir, force=False, interactive=True):
         return records
 
     fetched = _fetch_pricing()
+    if fetched is None:
+        sys.exit(1)
     if not fetched:
-        return records
+        print("ddbya: pricing fetch returned no models.", file=sys.stderr)
+        sys.exit(1)
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     updated = _merge_pricing_records(records, fetched, today)

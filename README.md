@@ -72,9 +72,11 @@ Answering `y` runs a one-shot `claude -p` call (using Haiku — cheapest model, 
 ddbya --pricing          # update pricing, then start the session
 ```
 
-If the fetch fails or Claude returns unparseable output, ddbya falls back silently to the hardcoded `MODEL_PRICING` table built into the script. Historical entries already in `.pricing.ddbya` are never modified in that case.
+If the fetch fails or Claude returns unparseable output, ddbya exits — the session does not launch, and any existing `.pricing.ddbya` is left untouched.
 
 `.pricing.ddbya` is project-local runtime data — it is listed in `.gitignore` and not committed.
+
+**Price-change dates are approximated.** Anthropic does not publish the date on which each price tier became effective, so ddbya cannot know when a tariff actually changed. When a fetch reveals that a model's price has changed since the last fetch, ddbya seals the old record at *yesterday* and starts the new record from *today* — even if the real change happened weeks earlier. The practical consequence: log entries between the actual change date and the fetch date are priced at the *old* rate (because the old record's `to` field still covers them). If you fetch frequently this drift is small; if you let pricing data go stale for months, entries in that window may be mispriced. Fetch sooner if you suspect Anthropic has revised tariffs.
 
 **Provider-specific surcharges are not supported.** ddbya only tracks Anthropic's published per-token prices. Deployments that carry additional charges — such as AWS Bedrock regional endpoints, third-party API proxies, or enterprise agreements with custom rates — will report costs lower than actually billed. There is currently no way to configure a surcharge multiplier or an alternative price schedule.
 
