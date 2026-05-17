@@ -1,0 +1,15 @@
+{"cache_read": 0.5, "cache_write": 6.25, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 5, "model_prefix": "claude-opus-4-7", "output": 25, "provider": "anthropic", "to": "2026-05-17"}
+{"cache_read": 0.5, "cache_write": 6.25, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 5, "model_prefix": "claude-opus-4-6", "output": 25, "provider": "anthropic", "to": "2026-05-17"}
+{"cache_read": 0.5, "cache_write": 6.25, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 5, "model_prefix": "claude-opus-4-5", "output": 25, "provider": "anthropic", "to": "2026-05-17"}
+{"cache_read": 1.5, "cache_write": 18.75, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 15, "model_prefix": "claude-opus-4-1", "output": 75, "provider": "anthropic", "to": "2026-05-17"}
+{"cache_read": 1.5, "cache_write": 18.75, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 15, "model_prefix": "claude-opus-4", "output": 75, "provider": "anthropic", "to": "2026-05-17"}
+{"cache_read": 0.3, "cache_write": 3.75, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 3, "model_prefix": "claude-sonnet-4-6", "output": 15, "provider": "anthropic", "to": "2026-05-17"}
+{"cache_read": 0.3, "cache_write": 3.75, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 3, "model_prefix": "claude-sonnet-4-5", "output": 15, "provider": "anthropic", "to": "2026-05-17"}
+{"cache_read": 0.3, "cache_write": 3.75, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 3, "model_prefix": "claude-sonnet-4", "output": 15, "provider": "anthropic", "to": "2026-05-17"}
+{"cache_read": 0.1, "cache_write": 1.25, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 1, "model_prefix": "claude-haiku-4-5", "output": 5, "provider": "anthropic", "to": "2026-05-17"}
+{"cache_read": 0.08, "cache_write": 1.0, "fetched_at": "2026-05-17T08:24:20Z", "from": "2026-05-17", "input": 0.8, "model_prefix": "claude-haiku-3-5", "output": 4, "provider": "anthropic", "to": "2026-05-17"}
+{"cache_read": 0.3, "cache_write": 3.75, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 3.0, "model_prefix": "claude-3-5-sonnet", "output": 15.0, "provider": "anthropic", "to": "2026-05-17"}
+{"cache_read": 0.3, "cache_write": 3.75, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 3.0, "model_prefix": "claude-3-sonnet", "output": 15.0, "provider": "anthropic", "to": "2026-05-17"}
+{"cache_read": 0.08, "cache_write": 1.0, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 0.8, "model_prefix": "claude-3-5-haiku", "output": 4.0, "provider": "anthropic", "to": "2026-05-17"}
+{"cache_read": 0.025, "cache_write": 0.3125, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 0.25, "model_prefix": "claude-3-haiku", "output": 1.25, "provider": "anthropic", "to": "2026-05-17"}
+{"cache_read": 1.5, "cache_write": 18.75, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 15.0, "model_prefix": "claude-3-opus", "output": 75.0, "provider": "anthropic", "to": "2026-05-17"}
