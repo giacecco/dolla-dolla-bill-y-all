@@ -76,6 +76,8 @@ If the fetch fails or Claude returns unparseable output, ddbya falls back silent
 
 `.pricing.ddbya` is project-local runtime data — it is listed in `.gitignore` and not committed.
 
+**Provider-specific surcharges are not supported.** ddbya only tracks Anthropic's published per-token prices. Deployments that carry additional charges — such as AWS Bedrock regional endpoints, third-party API proxies, or enterprise agreements with custom rates — will report costs lower than actually billed. There is currently no way to configure a surcharge multiplier or an alternative price schedule.
+
 ## Budget limits
 
 `-l`/`--limit <USD>` together with `--last <days>` puts a soft cap on spend across **all sibling projects under the parent directory**, computed from each project's `.token-usage.ddbya` using the historical pricing from `.pricing.ddbya` (or the built-in table as fallback).
