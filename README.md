@@ -56,9 +56,29 @@ projects/                     ← cd here, run ddbya-report . # report all consu
 - **Tags** — `-t` labels every entry in a session so `ddbya-report` can filter by tag later, even across projects in different parent / client folders, e.g. to see how many tokens I've spent on "code review" across all clients.
 - **Reporting** — point `ddbya-report` at a parent folder to aggregate across all its sub-projects, or at a single project folder to isolate one.
 
+## Pricing accuracy
+
+ddbya tracks Anthropic's pricing historically in a project-local `.pricing.ddbya` file. When reporting costs, each log entry is priced at the rate that applied on the day it was logged — not today's rate.
+
+On startup, ddbya checks the age of `.pricing.ddbya`. If the data is absent or more than 30 days old, it asks:
+
+```
+ddbya: pricing data is 32 days old. Fetch updated pricing via Claude? [y/N]
+```
+
+Answering `y` runs a one-shot `claude -p` call (using Haiku — cheapest model, web search enabled) that fetches the current tariffs from `anthropic.com/pricing` and writes them to `.pricing.ddbya`. The prompt is skipped for non-interactive sessions (`-p`/`--print` or non-TTY stdin). To force a fetch regardless of age, pass `--pricing` at launch:
+
+```sh
+ddbya --pricing          # update pricing, then start the session
+```
+
+If the fetch fails or Claude returns unparseable output, ddbya falls back silently to the hardcoded `MODEL_PRICING` table built into the script. Historical entries already in `.pricing.ddbya` are never modified in that case.
+
+`.pricing.ddbya` is project-local runtime data — it is listed in `.gitignore` and not committed.
+
 ## Budget limits
 
-`-l`/`--limit <USD>` together with `--last <days>` puts a soft cap on spend across **all sibling projects under the parent directory**, computed from each project's `.token-usage.ddbya` using public Anthropic per-model pricing.
+`-l`/`--limit <USD>` together with `--last <days>` puts a soft cap on spend across **all sibling projects under the parent directory**, computed from each project's `.token-usage.ddbya` using the historical pricing from `.pricing.ddbya` (or the built-in table as fallback).
 
 Behaviour:
 
