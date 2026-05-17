@@ -82,6 +82,8 @@ When `-t`/`--tag` is used, entries include a `"tags"` list. Tags let you associa
 
 When Claude Code is invoked with `-p`/`--print` (non-interactive mode), entries include `"programmatic": true`. This matters because Anthropic subscriptions starting 15 June 2026 bill programmatic and interactive usage at different rates. The field lets you separate the two when analysing costs.
 
+**Subscription "extra usage" is tracked.** When a subscription plan exhausts its included session or weekly allowance and tips into extra usage (billed at standard pay-per-use rates), ddbya detects the transition from the `rate_limit` SSE event that Anthropic includes in every streaming response. Affected entries are logged with `billing_mode: "anthropic_subscription_overage"` and counted toward budget limits and cost reports at standard pay-per-use rates. This works for streaming responses, which is what Claude Code uses exclusively.
+
 Timestamps are ISO 8601 UTC — parseable natively by `datetime.fromisoformat()` (Python), `new Date()` (JavaScript), `time.Parse(time.RFC3339, …)` (Go), etc.
 
 When the session ends, a summary is printed to stderr:

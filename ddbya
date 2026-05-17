@@ -278,7 +278,7 @@ class BudgetChecker:
         billing_mode = entry.get("billing_mode")
         programmatic = entry.get("programmatic", False)
         chargeable = (
-            billing_mode == "anthropic_api"
+            billing_mode in ("anthropic_api", "anthropic_subscription_overage")
             or (billing_mode == "anthropic_subscription" and programmatic)
         )
         if not chargeable:
@@ -697,9 +697,10 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
         req_model = req_data.get("model", "")
         best_input = best_output = cache_read = cache_create = 0
         best_model = req_model
+        is_overage = False
 
         def process_line(text):
-            nonlocal best_input, best_output, best_model, cache_read, cache_create
+            nonlocal best_input, best_output, best_model, cache_read, cache_create, is_overage
             if not text.startswith("data: "):
                 return
             try:
@@ -731,6 +732,9 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                         best_output = usage["output_tokens"]
                 if event.get("model"):
                     best_model = event["model"]
+            elif event_type == "rate_limit":
+                if event.get("isUsingOverage"):
+                    is_overage = True
 
         # Track whether the client is still reading. A disconnect mid-stream
         # should not crash the handler; keep parsing usage from upstream so the
@@ -769,6 +773,11 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             process_line(pending.decode("utf-8", errors="replace").rstrip("\r"))
 
         if best_input > 0 or best_output > 0:
+            effective_billing_mode = (
+                "anthropic_subscription_overage"
+                if is_overage and billing_mode == "anthropic_subscription"
+                else billing_mode
+            )
             self._log_token_usage(
                 model=best_model,
                 stream=True,
@@ -776,7 +785,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                 output_tokens=best_output,
                 cache_read=cache_read,
                 cache_create=cache_create,
-                billing_mode=billing_mode,
+                billing_mode=effective_billing_mode,
             )
 
     def _extract_usage_nonstream(self, resp_body, billing_mode=None):
