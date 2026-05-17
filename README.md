@@ -60,19 +60,13 @@ projects/                     ← cd here, run ddbya-report . # report all consu
 
 ddbya tracks Anthropic's pricing historically in a project-local `.pricing.ddbya` file. When reporting costs, each log entry is priced at the rate that applied on the day it was logged — not today's rate.
 
-On startup, ddbya checks the age of `.pricing.ddbya`. If the data is absent or more than 30 days old, it asks:
-
-```
-ddbya: pricing data is 32 days old. Fetch updated pricing via Claude? [y/N]
-```
-
-Answering `y` runs a one-shot `claude -p` call (using Haiku — cheapest model, web search enabled) that fetches the current tariffs from `anthropic.com/pricing` and writes them to `.pricing.ddbya`. The prompt is skipped for non-interactive sessions (`-p`/`--print` or non-TTY stdin). To force a fetch regardless of age, pass `--pricing` at launch:
+On first run in a new project directory, ddbya silently writes `.pricing.ddbya` from pricing data embedded in the script itself. No network call, no prompt. To fetch current tariffs from `anthropic.com/pricing` (using Haiku with web search), pass `--pricing` at launch:
 
 ```sh
-ddbya --pricing          # update pricing, then start the session
+ddbya --pricing          # fetch live pricing, then start the session
 ```
 
-If the fetch fails or Claude returns unparseable output, ddbya exits — the session does not launch, and any existing `.pricing.ddbya` is left untouched.
+If the live fetch fails or returns unparseable output, ddbya exits — the session does not launch, and any existing `.pricing.ddbya` is left untouched. Run without `--pricing` to fall back to the embedded data silently.
 
 `.pricing.ddbya` is project-local runtime data — it is listed in `.gitignore` and not committed.
 

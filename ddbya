@@ -46,22 +46,23 @@ OLLAMA_DEFAULT_HOST = "127.0.0.1:11434"
 
 _PRICING_FETCH_MODEL = "claude-haiku-4-5-20251001"
 _PRICING_FETCH_PROMPT = (
-    "Search the web for Anthropic API pricing for ALL Claude models, including "
-    "current flagship models AND legacy / deprecated / retired models that are "
-    "still listed (e.g. Opus 4.5, Opus 4.1, Opus 4, Sonnet 4.5, Sonnet 4, "
-    "Sonnet 3.7, Haiku 3.5, Haiku 3). Check https://www.anthropic.com/pricing "
-    "and https://docs.claude.com/en/docs/about-claude/pricing for the full list. "
-    "Different model generations have different prices (e.g. Opus 4.1 is "
-    "$15/$75 per million while Opus 4.5+ is $5/$25), so do not assume current "
-    "flagship pricing applies to older models. Output ONLY a JSON array of "
-    "objects, one per model, with fields: "
+    "Output Anthropic API pricing for ALL Claude models, including current "
+    "flagship models AND legacy / deprecated / retired models that are still "
+    "listed (e.g. Opus 4.5, Opus 4.1, Opus 4, Sonnet 4.5, Sonnet 4, Sonnet 3.7, "
+    "Haiku 3.5, Haiku 3). First try web search at https://www.anthropic.com/pricing "
+    "and https://docs.claude.com/en/docs/about-claude/pricing. If web search "
+    "fails or returns no useful results, fall back to your training knowledge "
+    "and still produce the array — do NOT return an empty array. Different "
+    "model generations have different prices (e.g. Opus 4.1 is $15/$75 per "
+    "million while Opus 4.5+ is $5/$25), so do not assume current flagship "
+    "pricing applies to older models. Output ONLY a JSON array of objects, "
+    "one per model, with fields: "
     'model_prefix (string, e.g. "claude-opus-4-7", "claude-opus-4-1", "claude-haiku-3-5"), '
     "input (float, USD per million input tokens), "
     "output (float, USD per million output tokens), "
     "cache_read (float, USD per million cached read tokens), "
     "cache_write (float, USD per million cache write tokens at 5-minute TTL). "
-    "No prose, no markdown fences, no explanation. JSON array only. "
-    "If the page is unreachable, output an empty array."
+    "No prose, no markdown fences, no explanation. JSON array only."
 )
 
 # Pricing per million tokens (USD), scraped from platform.claude.com/docs/en/about-claude/pricing.
@@ -80,6 +81,22 @@ MODEL_PRICING = {
     "claude-haiku-3-5":  {"input": 0.80, "output": 4,   "cache_write": 1.0,  "cache_read": 0.08},
 }
 _DEFAULT_PRICING = MODEL_PRICING["claude-sonnet-4-6"]
+
+# Baseline pricing records embedded in the script. Used to bootstrap .pricing.ddbya
+# on first run so the file always exists without requiring a network fetch.
+# 'from' dates are conservative lower bounds; run `ddbya --pricing` to refresh live.
+_EMBEDDED_PRICING_RECORDS = [
+    {"provider": "anthropic", "model_prefix": "claude-opus-4-7",   "from": "2026-02-01", "input": 5,    "output": 25,  "cache_read": 0.50, "cache_write": 6.25},
+    {"provider": "anthropic", "model_prefix": "claude-opus-4-6",   "from": "2025-11-01", "input": 5,    "output": 25,  "cache_read": 0.50, "cache_write": 6.25},
+    {"provider": "anthropic", "model_prefix": "claude-opus-4-5",   "from": "2025-09-01", "input": 5,    "output": 25,  "cache_read": 0.50, "cache_write": 6.25},
+    {"provider": "anthropic", "model_prefix": "claude-opus-4-1",   "from": "2025-06-01", "input": 15,   "output": 75,  "cache_read": 1.50, "cache_write": 18.75},
+    {"provider": "anthropic", "model_prefix": "claude-opus-4",     "from": "2025-02-01", "input": 15,   "output": 75,  "cache_read": 1.50, "cache_write": 18.75},
+    {"provider": "anthropic", "model_prefix": "claude-sonnet-4-6", "from": "2025-11-01", "input": 3,    "output": 15,  "cache_read": 0.30, "cache_write": 3.75},
+    {"provider": "anthropic", "model_prefix": "claude-sonnet-4-5", "from": "2025-09-01", "input": 3,    "output": 15,  "cache_read": 0.30, "cache_write": 3.75},
+    {"provider": "anthropic", "model_prefix": "claude-sonnet-4",   "from": "2025-02-01", "input": 3,    "output": 15,  "cache_read": 0.30, "cache_write": 3.75},
+    {"provider": "anthropic", "model_prefix": "claude-haiku-4-5",  "from": "2025-03-01", "input": 1,    "output": 5,   "cache_read": 0.10, "cache_write": 1.25},
+    {"provider": "anthropic", "model_prefix": "claude-haiku-3-5",  "from": "2024-10-01", "input": 0.80, "output": 4,   "cache_read": 0.08, "cache_write": 1.0},
+]
 
 # Sorted keys for longest-prefix-first matching
 _MODEL_PRICING_PREFIXES = sorted(MODEL_PRICING.keys(), key=len, reverse=True)
@@ -295,51 +312,41 @@ def _fetch_pricing():
     return None
 
 
-def maybe_update_pricing(project_dir, force=False, interactive=True):
-    """Check .pricing.ddbya staleness and optionally fetch updated pricing.
+def maybe_update_pricing(project_dir, force=False):
+    """Ensure .pricing.ddbya exists, optionally refreshing via live fetch.
 
-    Prompts the user when interactive and data is absent or > 30 days old.
-    With force=True, fetches unconditionally without prompting.
+    If the file is absent, bootstraps it silently from _EMBEDDED_PRICING_RECORDS.
+    With force=True (--pricing flag), fetches live pricing from anthropic.com
+    unconditionally and merges results in.
     Returns the (possibly updated) list of pricing records.
     """
     pricing_path = Path(project_dir) / PRICING_FILE
     records = load_pricing_records(project_dir)
 
-    if force:
-        do_fetch = True
-        do_prompt = False
-    else:
-        newest_fetch = max((r.get("fetched_at", "") for r in records), default="")
-        if newest_fetch:
-            try:
-                fetched_dt = datetime.strptime(newest_fetch, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                age_days = (datetime.now(timezone.utc) - fetched_dt).days
-            except ValueError:
-                age_days = None
-        else:
-            age_days = None
-        do_fetch = interactive and (age_days is None or age_days > 30)
-        do_prompt = do_fetch
-
-    if do_prompt:
-        age_msg = "no pricing data found" if not records else f"pricing data is {age_days} day(s) old"
-        print(f"\nddbya: {age_msg}. Fetch updated pricing via Claude? [y/N] ",
-              end="", file=sys.stderr, flush=True)
+    if not pricing_path.exists():
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        bootstrapped = [{**r, "to": today, "fetched_at": now_iso} for r in _EMBEDDED_PRICING_RECORDS]
         try:
-            answer = sys.stdin.readline().strip().lower()
-        except (OSError, EOFError):
-            answer = ""
-        if answer != "y":
-            return records
+            with open(pricing_path, "w", encoding="utf-8") as fh:
+                for r in bootstrapped:
+                    fh.write(json.dumps(r, sort_keys=True) + "\n")
+            records = bootstrapped
+        except OSError as exc:
+            print(f"ddbya: could not write {pricing_path}: {exc}", file=sys.stderr)
 
-    if not do_fetch:
+    if not force:
         return records
 
     fetched = _fetch_pricing()
+    if not fetched:
+        # Web search can be flaky; one retry covers transient failures.
+        print("ddbya: pricing fetch returned no models; retrying once...", file=sys.stderr)
+        fetched = _fetch_pricing()
     if fetched is None:
         sys.exit(1)
     if not fetched:
-        print("ddbya: pricing fetch returned no models.", file=sys.stderr)
+        print("ddbya: pricing fetch returned no models after retry.", file=sys.stderr)
         sys.exit(1)
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -1234,10 +1241,8 @@ def main():
 
     programmatic = is_programmatic_invocation(claude_args)
 
-    # Pricing check happens before proxy start so the fetch goes direct to Anthropic,
-    # not through our proxy. Non-interactive sessions skip the prompt entirely.
-    interactive = not programmatic and sys.stdin.isatty()
-    pricing_records = maybe_update_pricing(Path.cwd(), force=force_pricing, interactive=interactive)
+    # Pricing bootstrap happens before proxy start so any fetch goes direct to Anthropic.
+    pricing_records = maybe_update_pricing(Path.cwd(), force=force_pricing)
 
     proxy = ReverseProxy(upstream, programmatic=programmatic, tags=tags, ollama_model=ollama_model)
     proxy.start()
