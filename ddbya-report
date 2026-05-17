@@ -37,10 +37,10 @@ def _load_pricing_from_ddbya():
     spec = importlib.util.spec_from_loader("_ddbya_pricing", loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
-    return module.MODEL_PRICING, module._DEFAULT_PRICING, module._MODEL_PRICING_PREFIXES
+    return module.MODEL_PRICING, module._DEFAULT_PRICING, module._MODEL_PRICING_PREFIXES, module.SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE
 
 
-MODEL_PRICING, _DEFAULT_PRICING, _MODEL_PRICING_PREFIXES = _load_pricing_from_ddbya()
+MODEL_PRICING, _DEFAULT_PRICING, _MODEL_PRICING_PREFIXES, SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE = _load_pricing_from_ddbya()
 
 
 def parse_args():
@@ -150,10 +150,12 @@ def find_pricing(model):
     return None
 
 
-def entry_cost(model, input_tokens, output_tokens, cache_read, cache_create, billing_mode=None, programmatic=False):
+def entry_cost(model, input_tokens, output_tokens, cache_read, cache_create, billing_mode=None, programmatic=False, timestamp=""):
+    ts_date = timestamp[:10]
     chargeable = (
         billing_mode in ("anthropic_api", "anthropic_subscription_overage")
-        or (billing_mode == "anthropic_subscription" and programmatic)
+        or (billing_mode == "anthropic_subscription" and programmatic
+            and ts_date >= SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE)
     )
     if not chargeable:
         return 0.0
@@ -232,7 +234,7 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
                     "output_tokens": out,
                     "cache_read": cr,
                     "cache_create": cc,
-                    "cost": entry_cost(model, inp, out, cr, cc, billing_mode=billing_mode, programmatic=(programmatic == "yes")),
+                    "cost": entry_cost(model, inp, out, cr, cc, billing_mode=billing_mode, programmatic=(programmatic == "yes"), timestamp=entry.get("timestamp", "")),
                     "requests": 1,
                 })
     return usage
