@@ -40,8 +40,22 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 TOKEN_LOG_FILE = ".token-usage.ddbya"
+PRICING_FILE = ".pricing.ddbya"
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
 OLLAMA_DEFAULT_HOST = "127.0.0.1:11434"
+
+_PRICING_FETCH_MODEL = "claude-haiku-4-5-20251001"
+_PRICING_FETCH_PROMPT = (
+    "Search the web for current Anthropic API pricing at https://www.anthropic.com/pricing "
+    "for all Claude models. Output ONLY a JSON array of objects, one per model, with fields: "
+    'model_prefix (string, e.g. "claude-opus-4-7"), '
+    "input (float, USD per million input tokens), "
+    "output (float, USD per million output tokens), "
+    "cache_read (float, USD per million cached read tokens), "
+    "cache_write (float, USD per million cache write tokens at 5-minute TTL). "
+    "No prose, no markdown fences, no explanation. JSON array only. "
+    "If the page is unreachable, output an empty array."
+)
 
 # Pricing per million tokens (USD), scraped from platform.claude.com/docs/en/about-claude/pricing.
 # Key: model ID prefix → {input, output, cache_write (5m), cache_read}
@@ -71,11 +85,214 @@ SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE = "2026-06-15"
 _BUDGET_WARN_THRESHOLDS = (80, 85, 90, 95, 96, 97, 98, 99)
 
 
+def load_pricing_records(project_dir):
+    """Load all records from .pricing.ddbya in project_dir. Returns list, empty if missing."""
+    path = Path(project_dir) / PRICING_FILE
+    records = []
+    if not path.exists():
+        return records
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    except OSError:
+        pass
+    return records
+
+
+def find_pricing_for(model, timestamp, pricing_records):
+    """Return pricing dict for model at the date of timestamp, using historical records.
+
+    Finds the most-recent record whose 'from' date is <= the entry date. Falls back
+    to MODEL_PRICING constants (then _DEFAULT_PRICING) if no record matches.
+    Returns None for non-Claude models.
+    """
+    ts_date = timestamp[:10] if timestamp else ""
+
+    if pricing_records and ts_date:
+        anthro = [r for r in pricing_records if r.get("provider") == "anthropic"]
+        prefixes = sorted(
+            {r["model_prefix"] for r in anthro if "model_prefix" in r},
+            key=len, reverse=True,
+        )
+        for prefix in prefixes:
+            if model == prefix or model.startswith(prefix + "-"):
+                candidates = sorted(
+                    [r for r in anthro if r.get("model_prefix") == prefix],
+                    key=lambda r: r.get("from", ""),
+                )
+                match = None
+                for r in candidates:
+                    if r.get("from", "") <= ts_date:
+                        match = r
+                if match:
+                    return {k: match[k] for k in ("input", "output", "cache_read", "cache_write")}
+
+    # Fall back to hardcoded table
+    for prefix in _MODEL_PRICING_PREFIXES:
+        if model == prefix or model.startswith(prefix + "-"):
+            return MODEL_PRICING[prefix]
+    if model.startswith("claude-"):
+        return _DEFAULT_PRICING
+    return None
+
+
+def _merge_pricing_records(existing, fetched, today_str):
+    """Merge freshly-fetched pricing into existing records.
+
+    For each model in fetched: if pricing is unchanged, bumps the latest record's
+    'to' date to today_str; if changed, seals the old record at yesterday and
+    appends a new one starting today.
+    """
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    yesterday = (datetime.strptime(today_str, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    price_keys = ("input", "output", "cache_read", "cache_write")
+
+    records = [dict(r) for r in existing]
+
+    for item in fetched:
+        prefix = item.get("model_prefix")
+        if not prefix:
+            continue
+        new_price = {k: item[k] for k in price_keys if k in item}
+        if len(new_price) < len(price_keys):
+            continue
+
+        anthro_for_prefix = [
+            r for r in records
+            if r.get("provider") == "anthropic" and r.get("model_prefix") == prefix
+        ]
+        if anthro_for_prefix:
+            latest = max(anthro_for_prefix, key=lambda r: r.get("from", ""))
+            old_price = {k: latest[k] for k in price_keys if k in latest}
+            if old_price == new_price:
+                latest["to"] = today_str
+                latest["fetched_at"] = now_iso
+            else:
+                latest["to"] = yesterday
+                records.append({
+                    "provider": "anthropic",
+                    "model_prefix": prefix,
+                    "from": today_str,
+                    "to": today_str,
+                    "fetched_at": now_iso,
+                    **new_price,
+                })
+        else:
+            records.append({
+                "provider": "anthropic",
+                "model_prefix": prefix,
+                "from": today_str,
+                "to": today_str,
+                "fetched_at": now_iso,
+                **new_price,
+            })
+
+    return records
+
+
+def _fetch_pricing():
+    """Run claude -p to fetch current Anthropic pricing. Returns list of dicts or None."""
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "--model", _PRICING_FETCH_MODEL, _PRICING_FETCH_PROMPT],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except FileNotFoundError:
+        print("ddbya: 'claude' not found; cannot fetch pricing.", file=sys.stderr)
+        return None
+    except subprocess.TimeoutExpired:
+        print("ddbya: pricing fetch timed out after 60s.", file=sys.stderr)
+        return None
+
+    if result.returncode != 0:
+        print(f"ddbya: pricing fetch exited {result.returncode}.", file=sys.stderr)
+        return None
+
+    text = result.stdout.strip()
+    # Try direct parse first; fall back to extracting a JSON array from prose.
+    for candidate in (text, text[text.find("["):text.rfind("]") + 1] if "[" in text else ""):
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, list):
+                return data
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    print("ddbya: pricing fetch returned unparseable output.", file=sys.stderr)
+    return None
+
+
+def maybe_update_pricing(project_dir, force=False, interactive=True):
+    """Check .pricing.ddbya staleness and optionally fetch updated pricing.
+
+    Prompts the user when interactive and data is absent or > 30 days old.
+    With force=True, fetches unconditionally without prompting.
+    Returns the (possibly updated) list of pricing records.
+    """
+    pricing_path = Path(project_dir) / PRICING_FILE
+    records = load_pricing_records(project_dir)
+
+    if force:
+        do_fetch = True
+        do_prompt = False
+    else:
+        newest_fetch = max((r.get("fetched_at", "") for r in records), default="")
+        if newest_fetch:
+            try:
+                fetched_dt = datetime.strptime(newest_fetch, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                age_days = (datetime.now(timezone.utc) - fetched_dt).days
+            except ValueError:
+                age_days = None
+        else:
+            age_days = None
+        do_fetch = interactive and (age_days is None or age_days > 30)
+        do_prompt = do_fetch
+
+    if do_prompt:
+        age_msg = "no pricing data found" if not records else f"pricing data is {age_days} day(s) old"
+        print(f"\nddbya: {age_msg}. Fetch updated pricing via Claude? [y/N] ",
+              end="", file=sys.stderr, flush=True)
+        try:
+            answer = sys.stdin.readline().strip().lower()
+        except (OSError, EOFError):
+            answer = ""
+        if answer != "y":
+            return records
+
+    if not do_fetch:
+        return records
+
+    fetched = _fetch_pricing()
+    if not fetched:
+        return records
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    updated = _merge_pricing_records(records, fetched, today)
+    try:
+        with open(pricing_path, "w", encoding="utf-8") as fh:
+            for r in updated:
+                fh.write(json.dumps(r, sort_keys=True) + "\n")
+    except OSError as exc:
+        print(f"ddbya: could not write {pricing_path}: {exc}", file=sys.stderr)
+        return records
+
+    return updated
+
+
 class BudgetChecker:
     """Periodically scans .token-usage.ddbya across sibling projects to enforce a budget."""
 
     def __init__(self, limit_usd, lookback_days, project_dir,
-                 check_interval=60, on_exceeded=None, is_idle=None):
+                 check_interval=60, on_exceeded=None, is_idle=None, pricing_records=None):
         self._limit_usd = limit_usd
         self._lookback = timedelta(days=lookback_days)
         self._project_dir = Path(project_dir).resolve()
@@ -97,6 +314,7 @@ class BudgetChecker:
         self._last_notified_pct = -1
         self._unknown_models = set()
         self._warned_models = set()
+        self._pricing_records = pricing_records or []
         self._running = False
         self._thread = None
         self._first_check_done = threading.Event()
@@ -295,7 +513,7 @@ class BudgetChecker:
         cache_read = entry.get("cache_read_input_tokens", 0)
         cache_create = entry.get("cache_creation_input_tokens", 0)
 
-        pricing = self._find_pricing(model)
+        pricing = self._find_pricing(model, entry.get("timestamp", ""))
         if pricing is None:
             return 0.0
 
@@ -307,39 +525,49 @@ class BudgetChecker:
         )
         return cost / 1_000_000
 
-    def _find_pricing(self, model):
-        for prefix in _MODEL_PRICING_PREFIXES:
-            if model == prefix or model.startswith(prefix + "-"):
-                return MODEL_PRICING[prefix]
-        if model.startswith("claude-"):
-            should_warn = False
-            with self._lock:
-                self._unknown_models.add(model)
-                if model not in self._warned_models:
-                    self._warned_models.add(model)
-                    should_warn = True
-            # Suppress the inline warning during the pre-flight check: main()
-            # exits before claude is launched if unknown models are present,
-            # so the "session will finish" wording would be a lie. After the
-            # first check, claude is running and the wording is accurate.
-            if should_warn and self._first_check_done.is_set():
-                print(
-                    f"\nUnrecognised Claude model '{model}' — session will finish but ddbya will then exit.\n"
-                    f"Download the latest version:\n"
-                    f"  curl -o ddbya https://raw.githubusercontent.com/giacecco/dolla-dolla-bill-y-all/main/ddbya",
-                    file=sys.stderr,
-                )
-            return _DEFAULT_PRICING
-        return None
+    def _find_pricing(self, model, timestamp=""):
+        pricing = find_pricing_for(model, timestamp, self._pricing_records)
+        if pricing is not None:
+            # Track unknown models: find_pricing_for falls back to _DEFAULT_PRICING
+            # for unrecognised claude-* models, but we still want to warn.
+            known = any(
+                model == p or model.startswith(p + "-")
+                for p in _MODEL_PRICING_PREFIXES
+            )
+            known_in_records = any(
+                (model == r.get("model_prefix") or model.startswith((r.get("model_prefix") or "") + "-"))
+                for r in self._pricing_records
+                if r.get("provider") == "anthropic"
+            )
+            if not known and not known_in_records and model.startswith("claude-"):
+                should_warn = False
+                with self._lock:
+                    self._unknown_models.add(model)
+                    if model not in self._warned_models:
+                        self._warned_models.add(model)
+                        should_warn = True
+                # Suppress the inline warning during the pre-flight check: main()
+                # exits before claude is launched if unknown models are present,
+                # so the "session will finish" wording would be a lie. After the
+                # first check, claude is running and the wording is accurate.
+                if should_warn and self._first_check_done.is_set():
+                    print(
+                        f"\nUnrecognised Claude model '{model}' — session will finish but ddbya will then exit.\n"
+                        f"Download the latest version:\n"
+                        f"  curl -o ddbya https://raw.githubusercontent.com/giacecco/dolla-dolla-bill-y-all/main/ddbya",
+                        file=sys.stderr,
+                    )
+        return pricing
 
 
 def parse_args(argv):
-    """Extract wrapper-specific flags, return (ollama_model_or_none, limit_usd_or_none, lookback_days_or_none, tags, list_tags, remaining_args_for_claude)."""
+    """Extract wrapper-specific flags, return (ollama_model, limit_usd, lookback_days, tags, list_tags, force_pricing, remaining_args_for_claude)."""
     ollama_model = None
     limit_usd = None
     lookback_days = None
     tags = []
     list_tags = False
+    force_pricing = False
     claude_args = []
     i = 0
     while i < len(argv):
@@ -403,11 +631,15 @@ def parse_args(argv):
             list_tags = True
             i += 1
             continue
+        elif arg == "--pricing":
+            force_pricing = True
+            i += 1
+            continue
         claude_args.append(arg)
         i += 1
 
     if list_tags:
-        return ollama_model, limit_usd, lookback_days, tags, list_tags, claude_args
+        return ollama_model, limit_usd, lookback_days, tags, list_tags, force_pricing, claude_args
 
     if limit_usd is not None and lookback_days is None:
         print("error: --limit requires --last <days>", file=sys.stderr)
@@ -419,7 +651,7 @@ def parse_args(argv):
         print("error: -l/--limit is not supported with -o/--ollama-model", file=sys.stderr)
         sys.exit(1)
 
-    return ollama_model, limit_usd, lookback_days, tags, list_tags, claude_args
+    return ollama_model, limit_usd, lookback_days, tags, list_tags, force_pricing, claude_args
 
 
 def _find_tag_root(start_dir):
@@ -919,7 +1151,7 @@ def format_summary(input_tokens, output_tokens, cache_read, cache_create, reques
 
 
 def main():
-    ollama_model, limit_usd, lookback_days, tags, list_tags, claude_args = parse_args(sys.argv[1:])
+    ollama_model, limit_usd, lookback_days, tags, list_tags, force_pricing, claude_args = parse_args(sys.argv[1:])
 
     if list_tags:
         for tag in collect_tags(Path.cwd()):
@@ -935,6 +1167,11 @@ def main():
 
     programmatic = is_programmatic_invocation(claude_args)
 
+    # Pricing check happens before proxy start so the fetch goes direct to Anthropic,
+    # not through our proxy. Non-interactive sessions skip the prompt entirely.
+    interactive = not programmatic and sys.stdin.isatty()
+    pricing_records = maybe_update_pricing(Path.cwd(), force=force_pricing, interactive=interactive)
+
     proxy = ReverseProxy(upstream, programmatic=programmatic, tags=tags, ollama_model=ollama_model)
     proxy.start()
 
@@ -944,6 +1181,7 @@ def main():
             limit_usd, lookback_days, Path.cwd(),
             on_exceeded=proxy.budget_exceeded.set,
             is_idle=lambda: proxy.is_idle,
+            pricing_records=pricing_records,
         )
         budget_checker.start()
         budget_checker.wait_first_check()

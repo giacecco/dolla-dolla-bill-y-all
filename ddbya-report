@@ -37,10 +37,14 @@ def _load_pricing_from_ddbya():
     spec = importlib.util.spec_from_loader("_ddbya_pricing", loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
-    return module.MODEL_PRICING, module._DEFAULT_PRICING, module._MODEL_PRICING_PREFIXES, module.SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE
+    return (module.MODEL_PRICING, module._DEFAULT_PRICING, module._MODEL_PRICING_PREFIXES,
+            module.SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE,
+            module.load_pricing_records, module.find_pricing_for)
 
 
-MODEL_PRICING, _DEFAULT_PRICING, _MODEL_PRICING_PREFIXES, SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE = _load_pricing_from_ddbya()
+(MODEL_PRICING, _DEFAULT_PRICING, _MODEL_PRICING_PREFIXES,
+ SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE,
+ load_pricing_records, find_pricing_for) = _load_pricing_from_ddbya()
 
 
 def parse_args():
@@ -141,16 +145,9 @@ def resolve_window(params):
     return from_date, to_date
 
 
-def find_pricing(model):
-    for prefix in _MODEL_PRICING_PREFIXES:
-        if model == prefix or model.startswith(prefix + "-"):
-            return MODEL_PRICING[prefix]
-    if model.startswith("claude-"):
-        return _DEFAULT_PRICING
-    return None
 
-
-def entry_cost(model, input_tokens, output_tokens, cache_read, cache_create, billing_mode=None, programmatic=False, timestamp=""):
+def entry_cost(model, input_tokens, output_tokens, cache_read, cache_create,
+               billing_mode=None, programmatic=False, timestamp="", pricing_records=None):
     ts_date = timestamp[:10]
     chargeable = (
         billing_mode in ("anthropic_api", "anthropic_subscription_overage")
@@ -159,7 +156,7 @@ def entry_cost(model, input_tokens, output_tokens, cache_read, cache_create, bil
     )
     if not chargeable:
         return 0.0
-    pricing = find_pricing(model)
+    pricing = find_pricing_for(model, timestamp, pricing_records or [])
     if pricing is None:
         return 0.0
     return (
@@ -190,6 +187,7 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
             project = root.name or root.resolve().name
         else:
             project = jsonl_path.relative_to(root).parts[0]
+        project_pricing = load_pricing_records(jsonl_path.parent)
         try:
             fh = open(jsonl_path, encoding="utf-8")
         except OSError:
@@ -234,7 +232,10 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
                     "output_tokens": out,
                     "cache_read": cr,
                     "cache_create": cc,
-                    "cost": entry_cost(model, inp, out, cr, cc, billing_mode=billing_mode, programmatic=(programmatic == "yes"), timestamp=entry.get("timestamp", "")),
+                    "cost": entry_cost(model, inp, out, cr, cc, billing_mode=billing_mode,
+                                       programmatic=(programmatic == "yes"),
+                                       timestamp=entry.get("timestamp", ""),
+                                       pricing_records=project_pricing),
                     "requests": 1,
                 })
     return usage
