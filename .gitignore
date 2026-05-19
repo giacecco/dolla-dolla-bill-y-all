@@ -11,6 +11,3 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
-
-# Runtime data
-.token-usage.ddbya
