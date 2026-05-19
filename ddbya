@@ -851,10 +851,10 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
     def _detect_billing_mode(self):
         if self.ollama_model:
             return "ollama_subscription" if self.ollama_model.endswith(":cloud") else "ollama"
-        if self.headers.get("x-api-key"):
-            return "anthropic_api"
         if self.headers.get("Authorization", "").startswith("Bearer "):
             return "anthropic_subscription"
+        if self.headers.get("x-api-key"):
+            return "anthropic_api"
         return None
 
     def _refuse_budget_exceeded(self):
