@@ -58,17 +58,17 @@ projects/                     ← cd here, run ddbya-report . # report all consu
 
 ## Pricing accuracy
 
-ddbya tracks Anthropic's pricing historically in a project-local `.pricing.ddbya` file. When reporting costs, each log entry is priced at the rate that applied on the day it was logged — not today's rate.
+ddbya tracks Anthropic's pricing historically in a project-local `.ddbya.d/pricing.ddbya` file. When reporting costs, each log entry is priced at the rate that applied on the day it was logged — not today's rate.
 
-On first run in a new project directory, ddbya silently writes `.pricing.ddbya` from pricing data embedded in the script itself. No network call, no prompt. To fetch current tariffs from `anthropic.com/pricing` (using Haiku with web search), pass `--pricing` at launch:
+On first run in a new project directory, ddbya silently writes `.ddbya.d/pricing.ddbya` from pricing data embedded in the script itself. No network call, no prompt. To fetch current tariffs from `anthropic.com/pricing` (using Haiku with web search), pass `--pricing` at launch:
 
 ```sh
 ddbya --pricing          # fetch live pricing, then start the session
 ```
 
-If the live fetch fails or returns unparseable output, ddbya exits — the session does not launch, and any existing `.pricing.ddbya` is left untouched. Run without `--pricing` to fall back to the embedded data silently.
+If the live fetch fails or returns unparseable output, ddbya exits — the session does not launch, and any existing `.ddbya.d/pricing.ddbya` is left untouched. Run without `--pricing` to fall back to the embedded data silently.
 
-`.pricing.ddbya` is committed to the repository because it is the master reference for pricing that is maintained in this repo, and is used as the default when ddbya is deployed elsewhere.
+`.ddbya.d/pricing.ddbya` is committed to the repository because it is the master reference for pricing that is maintained in this repo, and is used as the default when ddbya is deployed elsewhere.
 
 **Price-change dates are approximated.** Anthropic does not publish the date on which each price tier became effective, so ddbya cannot know when a tariff actually changed. When a fetch reveals that a model's price has changed since the last fetch, ddbya seals the old record at *yesterday* and starts the new record from *today* — even if the real change happened weeks earlier. The practical consequence: log entries between the actual change date and the fetch date are priced at the *old* rate (because the old record's `to` field still covers them). If you fetch frequently this drift is small; if you let pricing data go stale for months, entries in that window may be mispriced. Fetch sooner if you suspect Anthropic has revised tariffs.
 
@@ -94,19 +94,19 @@ ddbya reads these URLs on startup, overrides them with proxy paths (`/--bedrock`
 
 ## Budget limits
 
-`-l`/`--limit <USD>` together with `--last <days>` puts a soft cap on spend across **all sibling projects under the parent directory**, computed from each project's `.token-usage.ddbya` using the historical pricing from `.pricing.ddbya` (or the built-in table as fallback).
+`-l`/`--limit <USD>` together with `--last <days>` puts a soft cap on spend across **all sibling projects under the parent directory**, computed from each project's `.ddbya.d/usage-*.ddbya` files using the historical pricing from `.ddbya.d/pricing.ddbya` (or the built-in table as fallback).
 
 Behaviour:
 
 - **At launch:** if recent spend is already at or above the limit, ddbya refuses to start the session.
 - **During the session:** spend is re-checked every minute. Warnings are printed to stderr when spend crosses 80%, 85%, 90%, and each integer percentage from 95% upwards (crossing, not landing — spend can jump several points between ticks). If a session starts already past one or more thresholds, a single warning is shown at the highest crossed threshold. Warnings are deferred while a request is in flight (claude's TUI would otherwise repaint over them) and flushed on the next tick where the proxy is idle.
 - **Once 100% is crossed mid-session:** the proxy starts replying to any *new* API call with HTTP 429 (a synthetic Anthropic-style error). Already in-flight requests are allowed to complete normally. Once the in-flight count drops to zero, ddbya sends `SIGTERM` to claude, escalating to `SIGKILL` after 30s if needed.
-- **Unrecognised models:** if your `.token-usage.ddbya` history already mentions a Claude model ddbya doesn't know about (e.g. a release newer than this copy), the pre-flight check refuses to launch and points you at the latest version. If a new unknown model appears mid-session (a sibling project logging a release ddbya hasn't seen), ddbya warns, falls back to Sonnet pricing as an approximation, and exits with status 1 at the end of the session.
+- **Unrecognised models:** if your `.ddbya.d/usage-*.ddbya` history already mentions a Claude model ddbya doesn't know about (e.g. a release newer than this copy), the pre-flight check refuses to launch and points you at the latest version. If a new unknown model appears mid-session (a sibling project logging a release ddbya hasn't seen), ddbya warns, falls back to Sonnet pricing as an approximation, and exits with status 1 at the end of the session.
 - **Not supported with `-o`/`--ollama-model`** (no public pricing for arbitrary Ollama models).
 
 ## Output
 
-Every API call appends a line to `./.token-usage.ddbya` in the current working directory (one file per project):
+Every API call appends a line to `.ddbya.d/usage-<identity>.ddbya` in the current working directory, where `<identity>` is derived from `git config user.email` (or `$USER` as fallback). Each contributor writes to their own file, so parallel work and PR merges never conflict:
 
 ```json
 {"input_tokens": 354, "cache_read_input_tokens": 27123, "model": "claude-opus-4-7", "output_tokens": 42, "stream": true, "timestamp": "2026-05-13T14:30:00Z"}
@@ -135,13 +135,13 @@ Session token usage:
 
 ## Reporting
 
-`ddbya-report` aggregates `.token-usage.ddbya` files across multiple projects.
+`ddbya-report` aggregates `.ddbya.d/usage-*.ddbya` files across multiple projects (all contributors' files in each project are merged into a single project row).
 
 ```sh
 ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]
 ```
 
-If the given folder directly contains a `.token-usage.ddbya` file, it reports on that project only. Otherwise it recursively scans all subdirectories for `.token-usage.ddbya` files. Groups usage by top-level subfolder, model, programmatic flag, and tags. Includes all data by default — pass `--last`, `--from`, or `--to` to filter by date. `--from` and `--to` can be used together or individually; `--from` without `--to` means "from that date to now". `--last` is mutually exclusive with `--from`/`--to`. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. `--json` outputs compact JSON to stdout instead of the table. `--csv` outputs CSV with a header row. Each row's `tags` is an array of strings in JSON, or a pipe-joined string in CSV. `--json` and `--csv` are mutually exclusive. Zero dependencies — Python 3 standard library only.
+If the given folder directly contains a `.ddbya.d/` with usage files, it reports on that project only. Otherwise it recursively scans all subdirectories for `.ddbya.d/usage-*.ddbya` files. Legacy `.token-usage.ddbya` files (not yet migrated) are also read as a fallback. Groups usage by top-level subfolder, model, programmatic flag, and tags. Includes all data by default — pass `--last`, `--from`, or `--to` to filter by date. `--from` and `--to` can be used together or individually; `--from` without `--to` means "from that date to now". `--last` is mutually exclusive with `--from`/`--to`. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. `--json` outputs compact JSON to stdout instead of the table. `--csv` outputs CSV with a header row. Each row's `tags` is an array of strings in JSON, or a pipe-joined string in CSV. `--json` and `--csv` are mutually exclusive. Zero dependencies — Python 3 standard library only.
 
 Example — last 7 days of consumption for this project:
 
@@ -209,7 +209,7 @@ ddbya
   │   ├─ path prefix /--vertex  → Vertex AI gateway (billing_mode: google_vertex)
   │   ├─ path prefix /--foundry → Azure Foundry gateway (billing_mode: azure_foundry)
   │   └─ parses usage from streaming (SSE) and non-streaming responses
-  ├─ (with --limit) budget watchdog scans .token-usage.ddbya every minute
+  ├─ (with --limit) budget watchdog scans .ddbya.d/usage-*.ddbya every minute
   │   ├─ warns at 80 / 85 / 90% and each integer % from 95–99
   │   └─ at 100%: refuses new requests with HTTP 429, then SIGTERMs claude once idle
   └─ on exit: prints summary, exits with claude's return code

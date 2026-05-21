@@ -8,7 +8,7 @@ Usage:
     ddbya-report ROOT_FOLDER -t <filter> -t -<tag>   remove tags from matching entries
 
 Includes all data by default. Pass --last, --from, or --to to filter by date.
-Retagging with -t +/- modifies .token-usage.ddbya files in-place.
+Retagging with -t +/- modifies .ddbya.d/usage-*.ddbya files in-place.
 
 Zero dependencies — Python 3 standard library only.
 """
@@ -172,20 +172,37 @@ def _match_tag(pattern, tag):
     return pattern == tag
 
 
-def collect_entries(root, from_date, to_date, tag_filters=None):
-    direct = root / ".token-usage.ddbya"
-    if direct.exists():
-        paths = [direct]
-    else:
-        paths = sorted(root.rglob(".token-usage.ddbya"))
+def _discover_usage_paths(root):
+    """Yield (jsonl_path, project_dir) pairs for all usage files under root.
 
+    Checks .ddbya.d/usage-*.ddbya (new layout) and falls back to
+    .token-usage.ddbya (legacy) so projects not yet migrated still work.
+    """
+    direct_dir = root / ".ddbya.d"
+    if direct_dir.is_dir() and sorted(direct_dir.glob("usage-*.ddbya")):
+        for p in sorted(direct_dir.glob("usage-*.ddbya")):
+            yield p, root
+    else:
+        for p in sorted(root.rglob(".ddbya.d/usage-*.ddbya")):
+            yield p, p.parent.parent
+
+    # Legacy fallback: pick up any .token-usage.ddbya not yet migrated.
+    legacy = root / ".token-usage.ddbya"
+    if legacy.exists():
+        yield legacy, root
+    for p in sorted(root.rglob(".token-usage.ddbya")):
+        if p != root / ".token-usage.ddbya":
+            yield p, p.parent
+
+
+def collect_entries(root, from_date, to_date, tag_filters=None):
     usage = []
-    for jsonl_path in paths:
-        if jsonl_path.parent == root:
+    for jsonl_path, project_dir in _discover_usage_paths(root):
+        if project_dir == root:
             project = root.name or root.resolve().name
         else:
-            project = jsonl_path.relative_to(root).parts[0]
-        project_pricing = load_pricing_records(jsonl_path.parent)
+            project = project_dir.relative_to(root).parts[0]
+        project_pricing = load_pricing_records(project_dir)
         try:
             fh = open(jsonl_path, encoding="utf-8")
         except OSError:
@@ -240,15 +257,11 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
 
 
 def retag(root, from_date, to_date, tag_filters, add_tags, remove_tags):
-    """Modify tags in .token-usage.ddbya files in-place.
+    """Modify tags in .ddbya.d/usage-*.ddbya files in-place.
 
     Returns (modified_entries, modified_files).
     """
-    direct = root / ".token-usage.ddbya"
-    if direct.exists():
-        paths = [direct]
-    else:
-        paths = sorted(root.rglob(".token-usage.ddbya"))
+    paths = [p for p, _ in _discover_usage_paths(root)]
 
     total_modified = 0
     files_modified = 0
