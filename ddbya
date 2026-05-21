@@ -863,7 +863,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             token = auth[len("Bearer "):]
             if token.startswith("sk-ant-"):
                 return "anthropic_api"
-            if self.upstream_netloc == "anthropic.generative.engine.capgemini.com":
+            if self.upstream_netloc != "api.anthropic.com":
                 return "anthropic_api"
             return "anthropic_subscription"
         if self.headers.get("x-api-key"):
