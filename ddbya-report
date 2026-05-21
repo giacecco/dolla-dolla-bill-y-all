@@ -38,12 +38,12 @@ def _load_pricing_from_ddbya():
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return (module.MODEL_PRICING, module._DEFAULT_PRICING, module._MODEL_PRICING_PREFIXES,
-            module.SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE,
+            module.SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE, module._FREE_BILLING_MODES,
             module.load_pricing_records, module.find_pricing_for)
 
 
 (MODEL_PRICING, _DEFAULT_PRICING, _MODEL_PRICING_PREFIXES,
- SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE,
+ SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE, _FREE_BILLING_MODES,
  load_pricing_records, find_pricing_for) = _load_pricing_from_ddbya()
 
 
@@ -149,16 +149,11 @@ def resolve_window(params):
 def entry_cost(model, input_tokens, output_tokens, cache_read, cache_create,
                billing_mode=None, programmatic=False, timestamp="", pricing_records=None):
     ts_date = timestamp[:10]
-    chargeable = (
-        billing_mode in (
-            "anthropic_api", "anthropic_subscription_overage",
-            "aws_bedrock", "google_vertex", "azure_foundry",
-        )
-        or (billing_mode == "anthropic_subscription" and programmatic
-            and ts_date >= SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE)
-    )
-    if not chargeable:
+    if billing_mode is None or billing_mode in _FREE_BILLING_MODES:
         return 0.0
+    if billing_mode == "anthropic_subscription":
+        if not (programmatic and ts_date >= SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE):
+            return 0.0
     pricing = find_pricing_for(model, timestamp, pricing_records or [])
     if pricing is None:
         return 0.0

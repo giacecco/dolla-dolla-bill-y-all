@@ -104,6 +104,10 @@ _MODEL_PRICING_PREFIXES = sorted(MODEL_PRICING.keys(), key=len, reverse=True)
 # Anthropic subscription programmatic usage is only billed from this date onwards.
 SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE = "2026-06-15"
 
+# Billing modes that are always free — no cost regardless of token counts.
+# Everything else (including unknown future modes) is treated as chargeable.
+_FREE_BILLING_MODES = frozenset({"ollama", "ollama_subscription"})
+
 # Budget warning thresholds (percent of limit). Below 100% only — at/above 100%
 # the exceeded message (pre-flight or watchdog) carries the same info.
 _BUDGET_WARN_THRESHOLDS = (80, 85, 90, 95, 96, 97, 98, 99)
@@ -573,16 +577,11 @@ class BudgetChecker:
         billing_mode = entry.get("billing_mode")
         programmatic = entry.get("programmatic", False)
         ts_date = entry.get("timestamp", "")[:10]
-        chargeable = (
-            billing_mode in (
-                "anthropic_api", "anthropic_subscription_overage",
-                "aws_bedrock", "google_vertex", "azure_foundry",
-            )
-            or (billing_mode == "anthropic_subscription" and programmatic
-                and ts_date >= SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE)
-        )
-        if not chargeable:
+        if billing_mode is None or billing_mode in _FREE_BILLING_MODES:
             return 0.0
+        if billing_mode == "anthropic_subscription":
+            if not (programmatic and ts_date >= SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE):
+                return 0.0
 
         model = entry.get("model", "")
         input_tokens = entry.get("input_tokens", 0)
