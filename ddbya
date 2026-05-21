@@ -19,10 +19,10 @@ Options:
                                 Required when -l/--limit is set.
     -t, --tag <tag>            Tag to label this session's consumption. Can be
                                 given multiple times. Tags are written into
-                                each .ddbya.d/usage-<identity>.ddbya entry.
+                                each .ddbya.d/usage-<identity>-<session>.ddbya entry.
 
-The proxy writes token usage to .ddbya.d/usage-<identity>.ddbya in the
-current directory and prints a summary to stderr when the session ends.
+The proxy writes token usage to .ddbya.d/usage-<identity>-<session>.ddbya in
+the current directory and prints a summary to stderr when the session ends.
 """
 
 import sys
@@ -827,7 +827,7 @@ def _resolve_identity():
         return "anonymous"
 
 
-def _migrate_legacy_layout(project_dir, identity):
+def _migrate_legacy_layout(project_dir, identity, session_id):
     """Move legacy .token-usage.ddbya and .pricing.ddbya into .ddbya.d/ if present.
 
     Idempotent: safe to call on every startup.
@@ -838,14 +838,8 @@ def _migrate_legacy_layout(project_dir, identity):
 
     legacy_usage = project_dir / ".token-usage.ddbya"
     if legacy_usage.exists():
-        target = ddbya_dir / f"{USAGE_FILENAME_PREFIX}{identity}.ddbya"
-        if target.exists():
-            # Append legacy lines to the existing per-user file, then remove legacy.
-            with open(legacy_usage, "rb") as src, open(target, "ab") as dst:
-                dst.write(src.read())
-            legacy_usage.unlink()
-        else:
-            legacy_usage.rename(target)
+        target = ddbya_dir / f"{USAGE_FILENAME_PREFIX}{identity}-{session_id}.ddbya"
+        legacy_usage.rename(target)
         print(f"ddbya: migrated {legacy_usage.name} → {ddbya_dir.name}/{target.name}", file=sys.stderr)
 
     legacy_pricing = project_dir / ".pricing.ddbya"
@@ -1401,7 +1395,8 @@ def main():
     # Resolve the per-user identity and migrate any legacy layout before any
     # pricing or logging operations so all paths are in the right place.
     identity = _resolve_identity()
-    _migrate_legacy_layout(Path.cwd(), identity)
+    session_id = uuid.uuid4().hex[:8]
+    _migrate_legacy_layout(Path.cwd(), identity, session_id)
 
     # Save existing cloud-provider gateway URLs before the proxy overrides them.
     # We only intercept backends that already have a gateway URL configured;
@@ -1412,7 +1407,7 @@ def main():
     # Pricing bootstrap happens before proxy start so any fetch goes direct to Anthropic.
     pricing_records = maybe_update_pricing(Path.cwd(), force=force_pricing)
 
-    log_path = Path.cwd() / DDBYA_DIR / f"{USAGE_FILENAME_PREFIX}{identity}.ddbya"
+    log_path = Path.cwd() / DDBYA_DIR / f"{USAGE_FILENAME_PREFIX}{identity}-{session_id}.ddbya"
     proxy = ReverseProxy(upstream, log_path, programmatic=programmatic, tags=tags,
                          ollama_model=ollama_model, extra_upstreams=extra_upstreams)
     proxy.start()
