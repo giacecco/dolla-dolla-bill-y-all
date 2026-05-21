@@ -74,6 +74,24 @@ If the live fetch fails or returns unparseable output, ddbya exits — the sessi
 
 **Provider-specific surcharges are not supported.** ddbya only tracks Anthropic's published per-token prices. Deployments that carry additional charges — such as AWS Bedrock regional endpoints, third-party API proxies, or enterprise agreements with custom rates — will report costs lower than actually billed. There is currently no way to configure a surcharge multiplier or an alternative price schedule.
 
+## Cloud-provider backends
+
+ddbya can intercept traffic to AWS Bedrock, Google Vertex AI, and Microsoft Azure Foundry when you have an LLM gateway already configured. Set the relevant base URL env var **before** launching ddbya:
+
+```sh
+# AWS Bedrock via LiteLLM or similar gateway
+export ANTHROPIC_BEDROCK_BASE_URL=https://your-llm-gateway.example.com/bedrock
+ddbya
+
+# Google Vertex AI via gateway
+export ANTHROPIC_VERTEX_BASE_URL=https://your-llm-gateway.example.com/vertex
+ddbya
+```
+
+ddbya reads these URLs on startup, overrides them with proxy paths (`/--bedrock`, `/--vertex`, `/--foundry`), and routes each request to the original gateway. Entries are tagged with billing modes `aws_bedrock`, `google_vertex`, or `azure_foundry` respectively.
+
+**Limitation:** native-SDK backends (e.g. `CLAUDE_CODE_USE_BEDROCK=1` without a gateway URL) route through Claude Code's internal SDK and do not reach the proxy. ddbya cannot intercept those requests without a format-translation layer.
+
 ## Budget limits
 
 `-l`/`--limit <USD>` together with `--last <days>` puts a soft cap on spend across **all sibling projects under the parent directory**, computed from each project's `.token-usage.ddbya` using the historical pricing from `.pricing.ddbya` (or the built-in table as fallback).
@@ -100,7 +118,7 @@ When `-t`/`--tag` is used, entries include a `"tags"` list. Tags let you associa
 
 When Claude Code is invoked with `-p`/`--print` (non-interactive mode), entries include `"programmatic": true`. This matters because Anthropic subscriptions starting 15 June 2026 bill programmatic and interactive usage at different rates. The field lets you separate the two when analysing costs.
 
-**Subscription "extra usage" is tracked.** When a subscription plan exhausts its included session or weekly allowance and tips into extra usage (billed at standard pay-per-use rates), ddbya detects the transition from the `rate_limit` SSE event that Anthropic includes in every streaming response. Affected entries are logged with `billing_mode: "anthropic_subscription_overage"` and counted toward budget limits and cost reports at standard pay-per-use rates. This works for streaming responses, which is what Claude Code uses exclusively.
+**Subscription "extra usage" is tracked.** When a subscription plan exhausts its included session or weekly allowance and tips into extra usage (billed at standard pay-per-use rates), ddbya detects the transition from the `rate_limit_event` SSE event that Anthropic includes in every streaming response (specifically `rate_limit_info.isUsingOverage`). Affected entries are logged with `billing_mode: "anthropic_subscription_overage"` and counted toward budget limits and cost reports at standard pay-per-use rates. This detection applies to streaming responses, which is what Claude Code uses in practice; non-streaming subscription requests are always logged as `"anthropic_subscription"` regardless of overage state.
 
 Timestamps are ISO 8601 UTC — parseable natively by `datetime.fromisoformat()` (Python), `new Date()` (JavaScript), `time.Parse(time.RFC3339, …)` (Go), etc.
 
@@ -181,10 +199,15 @@ source /path/to/dolla-dolla-bill-y-all/completions/ddbya-report.bash
 
 ```
 ddbya
+  ├─ snapshots any existing ANTHROPIC_BEDROCK/VERTEX/FOUNDRY_BASE_URL
   ├─ starts local reverse proxy on 127.0.0.1:<random-port>
   ├─ sets ANTHROPIC_BASE_URL=http://127.0.0.1:<port>
+  │   and (if backends found) ANTHROPIC_BEDROCK_BASE_URL=http://127.0.0.1:<port>/--bedrock etc.
   ├─ runs claude (all args forwarded)
   ├─ proxy relays each request to the real upstream
+  │   ├─ path prefix /--bedrock → AWS Bedrock gateway (billing_mode: aws_bedrock)
+  │   ├─ path prefix /--vertex  → Vertex AI gateway (billing_mode: google_vertex)
+  │   ├─ path prefix /--foundry → Azure Foundry gateway (billing_mode: azure_foundry)
   │   └─ parses usage from streaming (SSE) and non-streaming responses
   ├─ (with --limit) budget watchdog scans .token-usage.ddbya every minute
   │   ├─ warns at 80 / 85 / 90% and each integer % from 95–99

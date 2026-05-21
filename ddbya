@@ -574,7 +574,10 @@ class BudgetChecker:
         programmatic = entry.get("programmatic", False)
         ts_date = entry.get("timestamp", "")[:10]
         chargeable = (
-            billing_mode in ("anthropic_api", "anthropic_subscription_overage")
+            billing_mode in (
+                "anthropic_api", "anthropic_subscription_overage",
+                "aws_bedrock", "google_vertex", "azure_foundry",
+            )
             or (billing_mode == "anthropic_subscription" and programmatic
                 and ts_date >= SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE)
         )
@@ -823,6 +826,8 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
     tags = None
     ollama_model = None
     proxy = None
+    # path_prefix → {billing_mode, scheme, netloc, base_path} for cloud-provider backends
+    extra_upstreams = None
 
     # Suppress http.server's default request logging
     def log_message(self, format, *args):
@@ -848,7 +853,9 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             entry["billing_mode"] = billing_mode
         self.token_logger.log(entry)
 
-    def _detect_billing_mode(self):
+    def _detect_billing_mode(self, billing_hint=None):
+        if billing_hint:
+            return billing_hint
         if self.ollama_model:
             return "ollama_subscription" if self.ollama_model.endswith(":cloud") else "ollama"
         auth = self.headers.get("Authorization", "")
@@ -914,11 +921,36 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         req_body = self.rfile.read(content_length) if content_length else b""
 
+        # Resolve backend and upstream from path prefix. Path prefixes are set
+        # in extra_upstreams by main() for each configured third-party backend
+        # (e.g. /--bedrock for AWS Bedrock). When matched, strip the prefix and
+        # prepend the base path of the original upstream URL.
+        parsed_req = urllib.parse.urlparse(self.path)
+        req_path = parsed_req.path
+        req_query = parsed_req.query
+        active_scheme = self.upstream_scheme
+        active_netloc = self.upstream_netloc
+        active_billing_hint = None
+
+        for prefix, info in (self.extra_upstreams or {}).items():
+            if req_path == prefix or req_path.startswith(prefix + "/"):
+                active_billing_hint = info["billing_mode"]
+                active_scheme = info["scheme"]
+                active_netloc = info["netloc"]
+                stripped = req_path[len(prefix):]
+                base_path = info.get("base_path", "")
+                req_path = base_path + (stripped if stripped else "/")
+                if not req_path.startswith("/"):
+                    req_path = "/" + req_path
+                break
+
+        request_target = (req_path + "?" + req_query) if req_query else req_path
+
         # Forward to upstream
-        if self.upstream_scheme == "https":
-            conn = http.client.HTTPSConnection(self.upstream_netloc, timeout=300)
+        if active_scheme == "https":
+            conn = http.client.HTTPSConnection(active_netloc, timeout=300)
         else:
-            conn = http.client.HTTPConnection(self.upstream_netloc, timeout=300)
+            conn = http.client.HTTPConnection(active_netloc, timeout=300)
 
         upstream_headers = {}
         for key, value in self.headers.items():
@@ -928,7 +960,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
 
         try:
             try:
-                conn.request(method, self.path, body=req_body, headers=upstream_headers)
+                conn.request(method, request_target, body=req_body, headers=upstream_headers)
                 resp = conn.getresponse()
             except OSError as exc:
                 self.send_error(502, f"Bad Gateway: {exc}")
@@ -976,7 +1008,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                 client_alive = False
                 self.close_connection = True
 
-            billing_mode = self._detect_billing_mode()
+            billing_mode = self._detect_billing_mode(billing_hint=active_billing_hint)
 
             if is_streaming:
                 self._relay_stream(resp, req_data, is_gzip, client_alive=client_alive,
@@ -1049,8 +1081,8 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                         best_output = usage["output_tokens"]
                 if event.get("model"):
                     best_model = event["model"]
-            elif event_type == "rate_limit":
-                if event.get("isUsingOverage"):
+            elif event_type == "rate_limit_event":
+                if event.get("rate_limit_info", {}).get("isUsingOverage"):
                     is_overage = True
 
         # Track whether the client is still reading. A disconnect mid-stream
@@ -1136,7 +1168,8 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
 class ReverseProxy:
     """Manages the lifecycle of the reverse proxy HTTP server."""
 
-    def __init__(self, upstream_url, programmatic=False, tags=None, ollama_model=None):
+    def __init__(self, upstream_url, programmatic=False, tags=None, ollama_model=None,
+                 extra_upstreams=None):
         parsed = urllib.parse.urlparse(upstream_url)
         if parsed.scheme and parsed.netloc:
             self.upstream_scheme = parsed.scheme
@@ -1149,6 +1182,10 @@ class ReverseProxy:
         self.programmatic = programmatic
         self.tags = tags or []
         self.ollama_model = ollama_model
+        # path_prefix → {billing_mode, scheme, netloc, base_path} for cloud-provider
+        # backends (Bedrock, Vertex AI, Azure Foundry). Built in main() from existing
+        # ANTHROPIC_BEDROCK_BASE_URL / ANTHROPIC_VERTEX_BASE_URL / ANTHROPIC_FOUNDRY_BASE_URL.
+        self.extra_upstreams = extra_upstreams or {}
         self.token_logger = TokenLogger(TOKEN_LOG_FILE)
         self._server = None
         self._thread = None
@@ -1211,6 +1248,7 @@ class ReverseProxy:
         BoundHandler.tags = proxy.tags
         BoundHandler.ollama_model = proxy.ollama_model
         BoundHandler.proxy = proxy
+        BoundHandler.extra_upstreams = proxy.extra_upstreams
         return BoundHandler
 
 
@@ -1230,6 +1268,36 @@ def format_summary(input_tokens, output_tokens, cache_read, cache_create, reques
     return "\n".join(lines)
 
 
+def _build_extra_upstreams():
+    """Collect pre-configured LLM-gateway URLs for cloud-provider backends.
+
+    Returns a path-prefix → upstream-info dict consumed by ReverseProxy. Only
+    backends whose *_BASE_URL env var is already set are included — native-SDK
+    backends (CLAUDE_CODE_USE_BEDROCK without an existing gateway URL) cannot
+    be intercepted without a format-translation layer and are left alone.
+    """
+    extra = {}
+    candidates = [
+        ("/--bedrock", "aws_bedrock",
+         os.environ.get("ANTHROPIC_BEDROCK_BASE_URL") or os.environ.get("ANTHROPIC_AWS_BASE_URL")),
+        ("/--vertex",  "google_vertex",  os.environ.get("ANTHROPIC_VERTEX_BASE_URL")),
+        ("/--foundry", "azure_foundry",  os.environ.get("ANTHROPIC_FOUNDRY_BASE_URL")),
+    ]
+    for prefix, billing_mode, url in candidates:
+        if not url:
+            continue
+        parsed = urllib.parse.urlparse(url)
+        if not (parsed.scheme and parsed.netloc):
+            continue
+        extra[prefix] = {
+            "billing_mode": billing_mode,
+            "scheme": parsed.scheme,
+            "netloc": parsed.netloc,
+            "base_path": parsed.path.rstrip("/"),
+        }
+    return extra
+
+
 def main():
     ollama_model, limit_usd, lookback_days, tags, list_tags, force_pricing, claude_args = parse_args(sys.argv[1:])
 
@@ -1247,10 +1315,17 @@ def main():
 
     programmatic = is_programmatic_invocation(claude_args)
 
+    # Save existing cloud-provider gateway URLs before the proxy overrides them.
+    # We only intercept backends that already have a gateway URL configured;
+    # native-SDK backends (e.g. CLAUDE_CODE_USE_BEDROCK without a gateway URL)
+    # cannot be intercepted without a format-translation layer.
+    extra_upstreams = _build_extra_upstreams() if not ollama_model else {}
+
     # Pricing bootstrap happens before proxy start so any fetch goes direct to Anthropic.
     pricing_records = maybe_update_pricing(Path.cwd(), force=force_pricing)
 
-    proxy = ReverseProxy(upstream, programmatic=programmatic, tags=tags, ollama_model=ollama_model)
+    proxy = ReverseProxy(upstream, programmatic=programmatic, tags=tags,
+                         ollama_model=ollama_model, extra_upstreams=extra_upstreams)
     proxy.start()
 
     budget_checker = None
@@ -1288,7 +1363,18 @@ def main():
             sys.exit(1)
 
     env = os.environ.copy()
-    env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{proxy.port}"
+    proxy_base = f"http://127.0.0.1:{proxy.port}"
+    env["ANTHROPIC_BASE_URL"] = proxy_base
+    # Route each configured cloud-provider backend through the same proxy using
+    # path prefixes. ANTHROPIC_AWS_BASE_URL is an alias for ANTHROPIC_BEDROCK_BASE_URL;
+    # remove it to avoid Claude Code seeing conflicting values.
+    if "/--bedrock" in extra_upstreams:
+        env["ANTHROPIC_BEDROCK_BASE_URL"] = f"{proxy_base}/--bedrock"
+        env.pop("ANTHROPIC_AWS_BASE_URL", None)
+    if "/--vertex" in extra_upstreams:
+        env["ANTHROPIC_VERTEX_BASE_URL"] = f"{proxy_base}/--vertex"
+    if "/--foundry" in extra_upstreams:
+        env["ANTHROPIC_FOUNDRY_BASE_URL"] = f"{proxy_base}/--foundry"
     if ollama_model:
         env["ANTHROPIC_AUTH_TOKEN"] = "ollama"
         env.pop("ANTHROPIC_API_KEY", None)
