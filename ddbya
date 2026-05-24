@@ -1131,7 +1131,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                         self.wfile.write(resp_body)
                     except (BrokenPipeError, ConnectionResetError):
                         self.close_connection = True
-                self._extract_usage_nonstream(resp_body, billing_mode=billing_mode)
+                self._extract_usage_nonstream(resp_body, req_data, billing_mode=billing_mode)
         finally:
             conn.close()
 
@@ -1149,6 +1149,10 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
         best_input = best_output = cache_read = cache_create = 0
         best_model = req_model
         is_overage = False
+        # Ollama strips request-side routing suffixes (e.g. ":cloud") when echoing
+        # the model name back in SSE events. Preserve the request model so the log
+        # shows what was actually requested.
+        pin_request_model = bool(self.ollama_model and req_model)
 
         def process_line(text):
             nonlocal best_input, best_output, best_model, cache_read, cache_create, is_overage
@@ -1166,13 +1170,13 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                     best_input = usage["input_tokens"]
                 cache_read = usage.get("cache_read_input_tokens", 0)
                 cache_create = usage.get("cache_creation_input_tokens", 0)
-                if msg.get("model"):
+                if msg.get("model") and not pin_request_model:
                     best_model = msg["model"]
             elif event_type == "message_delta":
                 usage = event.get("usage", {})
                 if usage.get("output_tokens", 0) > 0:
                     best_output = usage["output_tokens"]
-                if event.get("model"):
+                if event.get("model") and not pin_request_model:
                     best_model = event["model"]
             elif event_type == "message_stop":
                 usage = event.get("usage", {})
@@ -1181,7 +1185,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                         best_input = usage["input_tokens"]
                     if usage.get("output_tokens", 0) > 0:
                         best_output = usage["output_tokens"]
-                if event.get("model"):
+                if event.get("model") and not pin_request_model:
                     best_model = event["model"]
             elif event_type == "rate_limit_event":
                 if event.get("rate_limit_info", {}).get("isUsingOverage"):
@@ -1239,14 +1243,21 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                 billing_mode=effective_billing_mode,
             )
 
-    def _extract_usage_nonstream(self, resp_body, billing_mode=None):
+    def _extract_usage_nonstream(self, resp_body, req_data, billing_mode=None):
         try:
             data = json.loads(resp_body)
             usage = data.get("usage")
             if not usage:
                 return
+            req_model = req_data.get("model", "") if req_data else ""
+            # See _relay_stream: in Ollama mode the response strips request-side
+            # routing suffixes (e.g. ":cloud"), so prefer the request model.
+            if self.ollama_model and req_model:
+                model = req_model
+            else:
+                model = data.get("model", "") or req_model
             self._log_token_usage(
-                model=data.get("model", ""),
+                model=model,
                 stream=False,
                 input_tokens=usage.get("input_tokens", 0),
                 output_tokens=usage.get("output_tokens", 0),
