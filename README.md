@@ -74,6 +74,8 @@ If the live fetch fails or returns unparseable output, ddbya exits — the sessi
 
 **Provider-specific surcharges are not supported.** ddbya only tracks Anthropic's published per-token prices. Deployments that carry additional charges — such as AWS Bedrock regional endpoints, third-party API proxies, or enterprise agreements with custom rates — will report costs lower than actually billed. There is currently no way to configure a surcharge multiplier or an alternative price schedule.
 
+**DeepSeek cache writes are priced at the input rate.** DeepSeek's pricing model has only two input tiers — cache miss (full price) and cache hit (heavily discounted) — with no separate cache-write charge. A newly-cached token is a cache miss, so ddbya prices any `cache_creation_input_tokens` at the same rate as `input_tokens`. If DeepSeek's Anthropic-compatible endpoint never populates `cache_creation_input_tokens` (likely, since the concept doesn't exist in their model), this costs nothing extra; if it does, the cost is correct rather than silently zero.
+
 ## Cloud-provider backends
 
 ddbya can intercept traffic to AWS Bedrock, Google Vertex AI, and Microsoft Azure Foundry when you have an LLM gateway already configured. Set the relevant base URL env var **before** launching ddbya:

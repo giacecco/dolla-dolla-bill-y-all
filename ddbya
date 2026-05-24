@@ -106,10 +106,13 @@ _EMBEDDED_PRICING_RECORDS = [
     {"provider": "anthropic", "model_prefix": "claude-sonnet-4",   "from": "2025-02-01", "input": 3,    "output": 15,  "cache_read": 0.30, "cache_write": 3.75},
     {"provider": "anthropic", "model_prefix": "claude-haiku-4-5",  "from": "2025-03-01", "input": 1,    "output": 5,   "cache_read": 0.10, "cache_write": 1.25},
     {"provider": "anthropic", "model_prefix": "claude-haiku-3-5",  "from": "2024-10-01", "input": 0.80, "output": 4,   "cache_read": 0.08, "cache_write": 1.0},
-    {"provider": "deepseek", "model_prefix": "deepseek-v4-flash", "from": "2026-05-24", "input": 0.14,  "output": 0.28,  "cache_read": 0.0028,   "cache_write": 0},
-    {"provider": "deepseek", "model_prefix": "deepseek-v4-pro",   "from": "2026-05-24", "input": 0.435, "output": 0.87,  "cache_read": 0.003625, "cache_write": 0},
-    {"provider": "deepseek", "model_prefix": "deepseek-chat",     "from": "2026-05-24", "input": 0.14,  "output": 0.28,  "cache_read": 0.0028,   "cache_write": 0},
-    {"provider": "deepseek", "model_prefix": "deepseek-reasoner", "from": "2026-05-24", "input": 0.14,  "output": 0.28,  "cache_read": 0.0028,   "cache_write": 0},
+    # DeepSeek has no separate cache-write price — cache writes are charged at the
+    # cache-miss (input) rate. cache_write is set to input so that if the endpoint
+    # ever populates cache_creation_input_tokens, those tokens are priced correctly.
+    {"provider": "deepseek", "model_prefix": "deepseek-v4-flash", "from": "2026-05-24", "input": 0.14,  "output": 0.28,  "cache_read": 0.0028,   "cache_write": 0.14},
+    {"provider": "deepseek", "model_prefix": "deepseek-v4-pro",   "from": "2026-05-24", "input": 0.435, "output": 0.87,  "cache_read": 0.003625, "cache_write": 0.435},
+    {"provider": "deepseek", "model_prefix": "deepseek-chat",     "from": "2026-05-24", "input": 0.14,  "output": 0.28,  "cache_read": 0.0028,   "cache_write": 0.14},
+    {"provider": "deepseek", "model_prefix": "deepseek-reasoner", "from": "2026-05-24", "input": 0.14,  "output": 0.28,  "cache_read": 0.0028,   "cache_write": 0.14},
 ]
 
 # Sorted keys for longest-prefix-first matching
@@ -151,22 +154,22 @@ def load_pricing_records(project_dir):
 def find_pricing_for(model, timestamp, pricing_records):
     """Return pricing dict for model at the date of timestamp, using historical records.
 
-    Finds the most-recent record whose 'from' date is <= the entry date. Falls back
-    to MODEL_PRICING constants (then _DEFAULT_PRICING) if no record matches.
-    Returns None for non-Claude models.
+    Finds the most-recent record whose 'from' date is <= the entry date. Searches
+    all providers (Anthropic, DeepSeek, etc.) in the records. Falls back to the
+    hardcoded MODEL_PRICING table for Anthropic models only.
+    Returns None if no pricing could be determined.
     """
     ts_date = timestamp[:10] if timestamp else ""
 
     if pricing_records and ts_date:
-        anthro = [r for r in pricing_records if r.get("provider") == "anthropic"]
         prefixes = sorted(
-            {r["model_prefix"] for r in anthro if "model_prefix" in r},
+            {r["model_prefix"] for r in pricing_records if "model_prefix" in r},
             key=len, reverse=True,
         )
         for prefix in prefixes:
             if model == prefix or model.startswith(prefix + "-"):
                 candidates = sorted(
-                    [r for r in anthro if r.get("model_prefix") == prefix],
+                    [r for r in pricing_records if r.get("model_prefix") == prefix],
                     key=lambda r: r.get("from", ""),
                 )
                 match = None
@@ -176,7 +179,7 @@ def find_pricing_for(model, timestamp, pricing_records):
                 if match:
                     return {k: match[k] for k in ("input", "output", "cache_read", "cache_write")}
 
-    # Fall back to hardcoded table
+    # Fall back to hardcoded table (Anthropic models only)
     for prefix in _MODEL_PRICING_PREFIXES:
         if model == prefix or model.startswith(prefix + "-"):
             return MODEL_PRICING[prefix]
@@ -631,7 +634,6 @@ class BudgetChecker:
             known_in_records = any(
                 (model == r.get("model_prefix") or model.startswith((r.get("model_prefix") or "") + "-"))
                 for r in self._pricing_records
-                if r.get("provider") == "anthropic"
             )
             if not known and not known_in_records and model.startswith("claude-"):
                 should_warn = False
