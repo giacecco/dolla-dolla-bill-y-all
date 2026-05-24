@@ -99,6 +99,10 @@ _EMBEDDED_PRICING_RECORDS = [
     {"provider": "anthropic", "model_prefix": "claude-sonnet-4",   "from": "2025-02-01", "input": 3,    "output": 15,  "cache_read": 0.30, "cache_write": 3.75},
     {"provider": "anthropic", "model_prefix": "claude-haiku-4-5",  "from": "2025-03-01", "input": 1,    "output": 5,   "cache_read": 0.10, "cache_write": 1.25},
     {"provider": "anthropic", "model_prefix": "claude-haiku-3-5",  "from": "2024-10-01", "input": 0.80, "output": 4,   "cache_read": 0.08, "cache_write": 1.0},
+    {"provider": "deepseek", "model_prefix": "deepseek-v4-flash", "from": "2026-05-24", "input": 0.14,  "output": 0.28,  "cache_read": 0.0028,   "cache_write": 0},
+    {"provider": "deepseek", "model_prefix": "deepseek-v4-pro",   "from": "2026-05-24", "input": 0.435, "output": 0.87,  "cache_read": 0.003625, "cache_write": 0},
+    {"provider": "deepseek", "model_prefix": "deepseek-chat",     "from": "2026-05-24", "input": 0.14,  "output": 0.28,  "cache_read": 0.0028,   "cache_write": 0},
+    {"provider": "deepseek", "model_prefix": "deepseek-reasoner", "from": "2026-05-24", "input": 0.14,  "output": 0.28,  "cache_read": 0.0028,   "cache_write": 0},
 ]
 
 # Sorted keys for longest-prefix-first matching

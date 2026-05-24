@@ -13,3 +13,7 @@
 {"cache_read": 0.08, "cache_write": 1.0, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 0.8, "model_prefix": "claude-3-5-haiku", "output": 4.0, "provider": "anthropic", "to": "2026-05-17"}
 {"cache_read": 0.025, "cache_write": 0.3125, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 0.25, "model_prefix": "claude-3-haiku", "output": 1.25, "provider": "anthropic", "to": "2026-05-17"}
 {"cache_read": 1.5, "cache_write": 18.75, "fetched_at": "2026-05-17T08:46:36Z", "from": "2026-05-17", "input": 15.0, "model_prefix": "claude-3-opus", "output": 75.0, "provider": "anthropic", "to": "2026-05-17"}
+{"cache_read": 0.0028, "cache_write": 0, "fetched_at": "2026-05-24T14:00:00Z", "from": "2026-05-24", "input": 0.14, "model_prefix": "deepseek-v4-flash", "output": 0.28, "provider": "deepseek", "to": "2026-05-24"}
+{"cache_read": 0.003625, "cache_write": 0, "fetched_at": "2026-05-24T14:00:00Z", "from": "2026-05-24", "input": 0.435, "model_prefix": "deepseek-v4-pro", "output": 0.87, "provider": "deepseek", "to": "2026-05-24"}
+{"cache_read": 0.0028, "cache_write": 0, "fetched_at": "2026-05-24T14:00:00Z", "from": "2026-05-24", "input": 0.14, "model_prefix": "deepseek-chat", "output": 0.28, "provider": "deepseek", "to": "2026-05-24"}
+{"cache_read": 0.0028, "cache_write": 0, "fetched_at": "2026-05-24T14:00:00Z", "from": "2026-05-24", "input": 0.14, "model_prefix": "deepseek-reasoner", "output": 0.28, "provider": "deepseek", "to": "2026-05-24"}
