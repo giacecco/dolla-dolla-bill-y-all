@@ -1,0 +1,4 @@
+{"billing_mode": "ollama_subscription", "input_tokens": 88513, "model": "deepseek-v4-pro", "output_tokens": 694, "stream": true, "timestamp": "2026-05-24T12:51:36Z"}
+{"billing_mode": "ollama_subscription", "input_tokens": 89269, "model": "deepseek-v4-pro", "output_tokens": 153, "stream": true, "timestamp": "2026-05-24T12:52:25Z"}
+{"billing_mode": "ollama_subscription", "input_tokens": 2059, "model": "deepseek-v4-pro", "output_tokens": 688, "stream": true, "timestamp": "2026-05-24T12:52:38Z"}
+{"billing_mode": "ollama_subscription", "input_tokens": 89996, "model": "deepseek-v4-pro", "output_tokens": 1123, "stream": true, "timestamp": "2026-05-24T12:53:14Z"}

@@ -6,6 +6,7 @@ Zero dependencies — Python 3 standard library only.
 Usage:
     ddbya [claude args...]
     ddbya -o <ollama-model> [claude args...]
+    ddbya --deepseek [claude args...]
     ddbya -l <limit> --last <days> [claude args...]
     ddbya -t <tag> [claude args...]
 
@@ -13,6 +14,11 @@ Options:
     -o, --ollama-model <model>  Route through Ollama with the given model.
                                 Sets the upstream to OLLAMA_HOST (default
                                 127.0.0.1:11434) and configures auth.
+    --deepseek                  Route through DeepSeek's Anthropic-compatible
+                                endpoint. Maps every DEEPSEEK_* env var to its
+                                ANTHROPIC_* equivalent. Defaults upstream to
+                                https://api.deepseek.com/anthropic (overridable
+                                via DEEPSEEK_BASE_URL env var).
     -l, --limit <USD>          Budget limit in US dollars. Requires --last.
                                 Not supported with -o/--ollama-model.
     --last <days>              Number of days to look back for budget tracking.
@@ -45,6 +51,7 @@ PRICING_FILENAME = "pricing.ddbya"
 USAGE_FILENAME_PREFIX = "usage-"
 USAGE_GLOB = "usage-*.ddbya"
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
+DEEPSEEK_DEFAULT_UPSTREAM = "https://api.deepseek.com/anthropic"
 OLLAMA_DEFAULT_HOST = "127.0.0.1:11434"
 
 _PRICING_FETCH_MODEL = "claude-haiku-4-5-20251001"
@@ -648,8 +655,9 @@ class BudgetChecker:
 
 
 def parse_args(argv):
-    """Extract wrapper-specific flags, return (ollama_model, limit_usd, lookback_days, tags, list_tags, force_pricing, remaining_args_for_claude)."""
+    """Extract wrapper-specific flags, return (ollama_model, deepseek, limit_usd, lookback_days, tags, list_tags, force_pricing, remaining_args_for_claude)."""
     ollama_model = None
+    deepseek = False
     limit_usd = None
     lookback_days = None
     tags = []
@@ -722,11 +730,15 @@ def parse_args(argv):
             force_pricing = True
             i += 1
             continue
+        elif arg == "--deepseek":
+            deepseek = True
+            i += 1
+            continue
         claude_args.append(arg)
         i += 1
 
     if list_tags:
-        return ollama_model, limit_usd, lookback_days, tags, list_tags, force_pricing, claude_args
+        return ollama_model, deepseek, limit_usd, lookback_days, tags, list_tags, force_pricing, claude_args
 
     if limit_usd is not None and lookback_days is None:
         print("error: --limit requires --last <days>", file=sys.stderr)
@@ -738,7 +750,7 @@ def parse_args(argv):
         print("error: -l/--limit is not supported with -o/--ollama-model", file=sys.stderr)
         sys.exit(1)
 
-    return ollama_model, limit_usd, lookback_days, tags, list_tags, force_pricing, claude_args
+    return ollama_model, deepseek, limit_usd, lookback_days, tags, list_tags, force_pricing, claude_args
 
 
 def _find_tag_root(start_dir):
@@ -902,10 +914,12 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
     # Set by ReverseProxy at server creation time
     upstream_scheme = "https"
     upstream_netloc = "api.anthropic.com"
+    upstream_base_path = ""
     token_logger = None
     programmatic = False
     tags = None
     ollama_model = None
+    deepseek = False
     proxy = None
     # path_prefix → {billing_mode, scheme, netloc, base_path} for cloud-provider backends
     extra_upstreams = None
@@ -937,6 +951,8 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
     def _detect_billing_mode(self, billing_hint=None):
         if billing_hint:
             return billing_hint
+        if self.deepseek:
+            return "deepseek_api"
         if self.ollama_model:
             return "ollama_subscription" if self.ollama_model.endswith(":cloud") else "ollama"
         auth = self.headers.get("Authorization", "")
@@ -1024,6 +1040,9 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                 if not req_path.startswith("/"):
                     req_path = "/" + req_path
                 break
+        else:
+            if self.upstream_base_path:
+                req_path = self.upstream_base_path + req_path
 
         request_target = (req_path + "?" + req_query) if req_query else req_path
 
@@ -1250,19 +1269,22 @@ class ReverseProxy:
     """Manages the lifecycle of the reverse proxy HTTP server."""
 
     def __init__(self, upstream_url, log_path, programmatic=False, tags=None,
-                 ollama_model=None, extra_upstreams=None):
+                 ollama_model=None, extra_upstreams=None, deepseek=False):
         parsed = urllib.parse.urlparse(upstream_url)
         if parsed.scheme and parsed.netloc:
             self.upstream_scheme = parsed.scheme
             self.upstream_netloc = parsed.netloc
+            self.upstream_base_path = parsed.path.rstrip("/")
         else:
             default = urllib.parse.urlparse(DEFAULT_UPSTREAM)
             self.upstream_scheme = default.scheme
             self.upstream_netloc = default.netloc
+            self.upstream_base_path = default.path.rstrip("/")
 
         self.programmatic = programmatic
         self.tags = tags or []
         self.ollama_model = ollama_model
+        self.deepseek = deepseek
         # path_prefix → {billing_mode, scheme, netloc, base_path} for cloud-provider
         # backends (Bedrock, Vertex AI, Azure Foundry). Built in main() from existing
         # ANTHROPIC_BEDROCK_BASE_URL / ANTHROPIC_VERTEX_BASE_URL / ANTHROPIC_FOUNDRY_BASE_URL.
@@ -1325,9 +1347,11 @@ class ReverseProxy:
         BoundHandler.token_logger = proxy.token_logger
         BoundHandler.upstream_scheme = proxy.upstream_scheme
         BoundHandler.upstream_netloc = proxy.upstream_netloc
+        BoundHandler.upstream_base_path = proxy.upstream_base_path
         BoundHandler.programmatic = proxy.programmatic
         BoundHandler.tags = proxy.tags
         BoundHandler.ollama_model = proxy.ollama_model
+        BoundHandler.deepseek = proxy.deepseek
         BoundHandler.proxy = proxy
         BoundHandler.extra_upstreams = proxy.extra_upstreams
         return BoundHandler
@@ -1380,7 +1404,7 @@ def _build_extra_upstreams():
 
 
 def main():
-    ollama_model, limit_usd, lookback_days, tags, list_tags, force_pricing, claude_args = parse_args(sys.argv[1:])
+    ollama_model, deepseek, limit_usd, lookback_days, tags, list_tags, force_pricing, claude_args = parse_args(sys.argv[1:])
 
     if list_tags:
         for tag in collect_tags(Path.cwd()):
@@ -1391,6 +1415,8 @@ def main():
         ollama_host = os.environ.get("OLLAMA_HOST", OLLAMA_DEFAULT_HOST)
         upstream = f"http://{ollama_host}"
         claude_args = ["--model", ollama_model] + claude_args
+    elif deepseek:
+        upstream = os.environ.get("DEEPSEEK_BASE_URL", DEEPSEEK_DEFAULT_UPSTREAM)
     else:
         upstream = os.environ.get("ANTHROPIC_BASE_URL", DEFAULT_UPSTREAM)
 
@@ -1406,14 +1432,15 @@ def main():
     # We only intercept backends that already have a gateway URL configured;
     # native-SDK backends (e.g. CLAUDE_CODE_USE_BEDROCK without a gateway URL)
     # cannot be intercepted without a format-translation layer.
-    extra_upstreams = _build_extra_upstreams() if not ollama_model else {}
+    extra_upstreams = _build_extra_upstreams() if not (ollama_model or deepseek) else {}
 
     # Pricing bootstrap happens before proxy start so any fetch goes direct to Anthropic.
     pricing_records = maybe_update_pricing(Path.cwd(), force=force_pricing)
 
     log_path = Path.cwd() / DDBYA_DIR / f"{USAGE_FILENAME_PREFIX}{identity}-{session_id}.ddbya"
     proxy = ReverseProxy(upstream, log_path, programmatic=programmatic, tags=tags,
-                         ollama_model=ollama_model, extra_upstreams=extra_upstreams)
+                         ollama_model=ollama_model, extra_upstreams=extra_upstreams,
+                         deepseek=deepseek)
     proxy.start()
 
     budget_checker = None
@@ -1466,6 +1493,14 @@ def main():
     if ollama_model:
         env["ANTHROPIC_AUTH_TOKEN"] = "ollama"
         env.pop("ANTHROPIC_API_KEY", None)
+    elif deepseek:
+        if env.get("ANTHROPIC_AUTH_TOKEN") == "ollama":
+            env.pop("ANTHROPIC_AUTH_TOKEN", None)
+        for key, value in os.environ.items():
+            if key.startswith("DEEPSEEK_") and key != "DEEPSEEK_BASE_URL":
+                env["ANTHROPIC_" + key[len("DEEPSEEK_"):]] = value
+        env["CLAUDE_CODE_SUBAGENT_MODEL"] = "deepseek-v4-flash"
+        env["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
     else:
         # Clear Ollama auth so Claude Code uses its normal keychain/OAuth login
         if env.get("ANTHROPIC_AUTH_TOKEN") == "ollama":
