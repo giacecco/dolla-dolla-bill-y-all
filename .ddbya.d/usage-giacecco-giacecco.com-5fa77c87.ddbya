@@ -1,0 +1,3 @@
+{"billing_mode": "anthropic_api", "input_tokens": 438, "model": "claude-sonnet-4-6", "output_tokens": 12, "stream": true, "tags": ["Adding Opus 4.8 support"], "timestamp": "2026-05-30T05:55:21Z"}
+{"billing_mode": "anthropic_api", "cache_creation_input_tokens": 13745, "cache_read_input_tokens": 22831, "input_tokens": 3, "model": "claude-sonnet-4-6", "output_tokens": 199, "stream": true, "tags": ["Adding Opus 4.8 support"], "timestamp": "2026-05-30T05:55:24Z"}
+{"billing_mode": "anthropic_api", "cache_creation_input_tokens": 4374, "cache_read_input_tokens": 36576, "input_tokens": 129, "model": "claude-sonnet-4-6", "output_tokens": 231, "stream": true, "tags": ["Adding Opus 4.8 support"], "timestamp": "2026-05-30T05:55:28Z"}
