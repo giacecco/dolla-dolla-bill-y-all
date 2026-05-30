@@ -1197,7 +1197,10 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
         # to False if header delivery failed before we got here.)
         pending = b""
         while True:
-            chunk = resp.read(4096)
+            try:
+                chunk = resp.read(4096)
+            except http.client.IncompleteRead as exc:
+                chunk = exc.partial
             if not chunk:
                 break
             if is_gzip:
