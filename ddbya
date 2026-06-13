@@ -1065,7 +1065,10 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                 conn.request(method, request_target, body=req_body, headers=upstream_headers)
                 resp = conn.getresponse()
             except OSError as exc:
-                self.send_error(502, f"Bad Gateway: {exc}")
+                try:
+                    self.send_error(502, f"Bad Gateway: {exc}")
+                except (BrokenPipeError, ConnectionResetError):
+                    self.close_connection = True
                 return
 
             is_gzip = resp.getheader("Content-Encoding", "").lower() == "gzip"
