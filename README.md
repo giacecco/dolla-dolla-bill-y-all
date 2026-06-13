@@ -21,16 +21,12 @@ ddbya                        # interactive session, uses env ANTHROPIC_BASE_URL
 ddbya -p "explain this PR"   # one-shot, prints token summary to stderr
 ddbya --model sonnet         # any claude flags are forwarded
 
-# Ollama -- one flag auto-configures everything
-ddbya -o deepseek-v4-pro:cloud
-ddbya -o deepseek-v4-pro:cloud -p "explain this"
-
 # Tags -- label consumption for cross-project tracking
 ddbya -t "reviewing PR #123"
 ddbya -t "client-acme" -t "urgent"   # multiple tags per session
 ```
 
-With `-o`/`--ollama-model`, the wrapper automatically sets the upstream to `OLLAMA_HOST` (defaults to `127.0.0.1:11434`), configures Ollama auth, and passes `--model` to claude. Without `-o`, the wrapper respects your existing `ANTHROPIC_BASE_URL` and auto-detects HTTP vs HTTPS.
+The wrapper respects your existing `ANTHROPIC_BASE_URL`. With `--deepseek`, the upstream is set to `DEEPSEEK_BASE_URL` (or the default DeepSeek endpoint) and every `DEEPSEEK_*` env var is mapped to its `ANTHROPIC_*` equivalent.
 
 ### Directory layout
 
@@ -78,13 +74,13 @@ Every API call appends a line to `.ddbya.d/usage-<identity>.ddbya` in the curren
 {"input_tokens": 354, "cache_read_input_tokens": 27123, "model": "claude-opus-4-7", "output_tokens": 42, "stream": true, "timestamp": "2026-05-13T14:30:00Z"}
 ```
 
-`cache_read_input_tokens` and `cache_creation_input_tokens` fields appear when prompt caching is in use (Anthropic API). Ollama has no caching, so its `input_tokens` counts everything — this is why DeepSeek shows 27k tokens and Anthropic shows 354.
+`cache_read_input_tokens` and `cache_creation_input_tokens` fields appear when prompt caching is in use (Anthropic API). DeepSeek has no caching, so its `input_tokens` counts everything.
 
 When `-t`/`--tag` is used, entries include a `"tags"` list. Tags let you associate consumption with a purpose (e.g. a PR review, a client project, an experiment) independently of the folder the session ran in.
 
 When Claude Code is invoked with `-p`/`--print` (non-interactive mode), entries include `"programmatic": true`.
 
-**Subscription "extra usage" is tracked.** When a subscription plan exhausts its included session or weekly allowance and tips into extra usage (billed at standard pay-per-use rates), ddbya detects the transition from the `rate_limit_event` SSE event that Anthropic includes in every streaming response (specifically `rate_limit_info.isUsingOverage`). Affected entries are logged with `billing_mode: "anthropic_subscription_overage"` and counted toward budget limits and cost reports at standard pay-per-use rates. This detection applies to streaming responses, which is what Claude Code uses in practice; non-streaming subscription requests are always logged as `"anthropic_subscription"` regardless of overage state.
+**Subscription "extra usage" is tracked.** When a subscription plan exhausts its included session or weekly allowance and tips into extra usage (billed at standard pay-per-use rates), ddbya detects the transition from the `rate_limit_event` SSE event that Anthropic includes in every streaming response (specifically `rate_limit_info.isUsingOverage`). Affected entries are logged with `billing_mode: "anthropic_subscription_overage"`. This detection applies to streaming responses, which is what Claude Code uses in practice; non-streaming subscription requests are always logged as `"anthropic_subscription"` regardless of overage state.
 
 Timestamps are ISO 8601 UTC — parseable natively by `datetime.fromisoformat()` (Python), `new Date()` (JavaScript), `time.Parse(time.RFC3339, …)` (Go), etc.
 
@@ -178,7 +174,7 @@ ddbya
   └─ on exit: prints summary, exits with claude's return code
 ```
 
-Token extraction handles the Anthropic API (`message_start` for input tokens, `message_delta` for output tokens), Ollama (`message_delta` for both), and transparently decompresses gzip-encoded responses from both APIs.
+Token extraction handles the Anthropic API (`message_start` for input tokens, `message_delta` for output tokens) and DeepSeek's Anthropic-compatible streaming format. Gzip-encoded responses are decompressed transparently.
 
 ## Disclaimer
 

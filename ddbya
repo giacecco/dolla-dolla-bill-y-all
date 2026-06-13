@@ -5,14 +5,10 @@ Zero dependencies — Python 3 standard library only.
 
 Usage:
     ddbya [claude args...]
-    ddbya -o <ollama-model> [claude args...]
     ddbya --deepseek [claude args...]
     ddbya -t <tag> [claude args...]
 
 Options:
-    -o, --ollama-model <model>  Route through Ollama with the given model.
-                                Sets the upstream to OLLAMA_HOST (default
-                                127.0.0.1:11434) and configures auth.
     --deepseek                  Route through DeepSeek's Anthropic-compatible
                                 endpoint. Maps every DEEPSEEK_* env var to its
                                 ANTHROPIC_* equivalent. Defaults upstream to
@@ -46,12 +42,10 @@ USAGE_FILENAME_PREFIX = "usage-"
 USAGE_GLOB = "usage-*.ddbya"
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
 DEEPSEEK_DEFAULT_UPSTREAM = "https://api.deepseek.com/anthropic"
-OLLAMA_DEFAULT_HOST = "127.0.0.1:11434"
 
 
 def parse_args(argv):
-    """Extract wrapper-specific flags, return (ollama_model, deepseek, tags, list_tags, remaining_args_for_claude)."""
-    ollama_model = None
+    """Extract wrapper-specific flags, return (deepseek, tags, list_tags, remaining_args_for_claude)."""
     deepseek = False
     tags = []
     list_tags = False
@@ -59,21 +53,7 @@ def parse_args(argv):
     i = 0
     while i < len(argv):
         arg = argv[i]
-        if arg in ("-o", "--ollama-model"):
-            if ollama_model is not None:
-                print("error: -o/--ollama-model given more than once", file=sys.stderr)
-                sys.exit(1)
-            if i + 1 >= len(argv):
-                print("error: -o/--ollama-model requires a model name", file=sys.stderr)
-                sys.exit(1)
-            val = argv[i + 1]
-            if val.startswith("-"):
-                print(f"error: -o/--ollama-model value looks like a flag: {val!r}", file=sys.stderr)
-                sys.exit(1)
-            ollama_model = val
-            i += 2
-            continue
-        elif arg in ("-t", "--tag"):
+        if arg in ("-t", "--tag"):
             if i + 1 >= len(argv):
                 print("error: -t/--tag requires a value", file=sys.stderr)
                 sys.exit(1)
@@ -91,7 +71,7 @@ def parse_args(argv):
         claude_args.append(arg)
         i += 1
 
-    return ollama_model, deepseek, tags, list_tags, claude_args
+    return deepseek, tags, list_tags, claude_args
 
 
 def _find_tag_root(start_dir):
@@ -250,7 +230,6 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
     token_logger = None
     programmatic = False
     tags = None
-    ollama_model = None
     deepseek = False
     # path_prefix → {billing_mode, scheme, netloc, base_path} for cloud-provider backends
     extra_upstreams = None
@@ -284,8 +263,6 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             return billing_hint
         if self.deepseek:
             return "deepseek_api"
-        if self.ollama_model:
-            return "ollama_subscription" if self.ollama_model.endswith(":cloud") else "ollama"
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             token = auth[len("Bearer "):]
@@ -297,9 +274,6 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
         if self.headers.get("x-api-key"):
             return "anthropic_api"
         return None
-
-    def _forward(self, method):
-        self._do_forward(method)
 
     def _do_forward(self, method):
         # Read the request body. Only Content-Length bodies are supported;
@@ -436,14 +410,9 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
         if is_gzip:
             decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
 
-        req_model = req_data.get("model", "")
         best_input = best_output = cache_read = cache_create = 0
-        best_model = req_model
+        best_model = req_data.get("model", "")
         is_overage = False
-        # Ollama strips request-side routing suffixes (e.g. ":cloud") when echoing
-        # the model name back in SSE events. Preserve the request model so the log
-        # shows what was actually requested.
-        pin_request_model = bool(self.ollama_model and req_model)
 
         def process_line(text):
             nonlocal best_input, best_output, best_model, cache_read, cache_create, is_overage
@@ -461,13 +430,13 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                     best_input = usage["input_tokens"]
                 cache_read = usage.get("cache_read_input_tokens", 0)
                 cache_create = usage.get("cache_creation_input_tokens", 0)
-                if msg.get("model") and not pin_request_model:
+                if msg.get("model"):
                     best_model = msg["model"]
             elif event_type == "message_delta":
                 usage = event.get("usage", {})
                 if usage.get("output_tokens", 0) > 0:
                     best_output = usage["output_tokens"]
-                if event.get("model") and not pin_request_model:
+                if event.get("model"):
                     best_model = event["model"]
             elif event_type == "message_stop":
                 usage = event.get("usage", {})
@@ -476,7 +445,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                         best_input = usage["input_tokens"]
                     if usage.get("output_tokens", 0) > 0:
                         best_output = usage["output_tokens"]
-                if event.get("model") and not pin_request_model:
+                if event.get("model"):
                     best_model = event["model"]
             elif event_type == "rate_limit_event":
                 if event.get("rate_limit_info", {}).get("isUsingOverage"):
@@ -544,12 +513,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             if not usage:
                 return
             req_model = req_data.get("model", "") if req_data else ""
-            # See _relay_stream: in Ollama mode the response strips request-side
-            # routing suffixes (e.g. ":cloud"), so prefer the request model.
-            if self.ollama_model and req_model:
-                model = req_model
-            else:
-                model = data.get("model", "") or req_model
+            model = data.get("model", "") or req_model
             self._log_token_usage(
                 model=model,
                 stream=False,
@@ -563,20 +527,20 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             pass
 
     # Dispatch every HTTP method to the forwarder
-    def do_GET(self): self._forward("GET")
-    def do_POST(self): self._forward("POST")
-    def do_PUT(self): self._forward("PUT")
-    def do_DELETE(self): self._forward("DELETE")
-    def do_PATCH(self): self._forward("PATCH")
-    def do_OPTIONS(self): self._forward("OPTIONS")
-    def do_HEAD(self): self._forward("HEAD")
+    def do_GET(self): self._do_forward("GET")
+    def do_POST(self): self._do_forward("POST")
+    def do_PUT(self): self._do_forward("PUT")
+    def do_DELETE(self): self._do_forward("DELETE")
+    def do_PATCH(self): self._do_forward("PATCH")
+    def do_OPTIONS(self): self._do_forward("OPTIONS")
+    def do_HEAD(self): self._do_forward("HEAD")
 
 
 class ReverseProxy:
     """Manages the lifecycle of the reverse proxy HTTP server."""
 
     def __init__(self, upstream_url, log_path, programmatic=False, tags=None,
-                 ollama_model=None, extra_upstreams=None, deepseek=False):
+                 extra_upstreams=None, deepseek=False):
         parsed = urllib.parse.urlparse(upstream_url)
         if parsed.scheme and parsed.netloc:
             self.upstream_scheme = parsed.scheme
@@ -590,7 +554,6 @@ class ReverseProxy:
 
         self.programmatic = programmatic
         self.tags = tags or []
-        self.ollama_model = ollama_model
         self.deepseek = deepseek
         # path_prefix → {billing_mode, scheme, netloc, base_path} for cloud-provider
         # backends (Bedrock, Vertex AI, Azure Foundry). Built in main() from existing
@@ -630,7 +593,6 @@ class ReverseProxy:
         BoundHandler.upstream_base_path = proxy.upstream_base_path
         BoundHandler.programmatic = proxy.programmatic
         BoundHandler.tags = proxy.tags
-        BoundHandler.ollama_model = proxy.ollama_model
         BoundHandler.deepseek = proxy.deepseek
         BoundHandler.extra_upstreams = proxy.extra_upstreams
         return BoundHandler
@@ -683,18 +645,14 @@ def _build_extra_upstreams():
 
 
 def main():
-    ollama_model, deepseek, tags, list_tags, claude_args = parse_args(sys.argv[1:])
+    deepseek, tags, list_tags, claude_args = parse_args(sys.argv[1:])
 
     if list_tags:
         for tag in collect_tags(Path.cwd()):
             print(tag)
         sys.exit(0)
 
-    if ollama_model:
-        ollama_host = os.environ.get("OLLAMA_HOST", OLLAMA_DEFAULT_HOST)
-        upstream = f"http://{ollama_host}"
-        claude_args = ["--model", ollama_model] + claude_args
-    elif deepseek:
+    if deepseek:
         upstream = os.environ.get("DEEPSEEK_BASE_URL", DEEPSEEK_DEFAULT_UPSTREAM)
     else:
         upstream = os.environ.get("ANTHROPIC_BASE_URL", DEFAULT_UPSTREAM)
@@ -711,12 +669,11 @@ def main():
     # We only intercept backends that already have a gateway URL configured;
     # native-SDK backends (e.g. CLAUDE_CODE_USE_BEDROCK without a gateway URL)
     # cannot be intercepted without a format-translation layer.
-    extra_upstreams = _build_extra_upstreams() if not (ollama_model or deepseek) else {}
+    extra_upstreams = _build_extra_upstreams() if not deepseek else {}
 
     log_path = Path.cwd() / DDBYA_DIR / f"{USAGE_FILENAME_PREFIX}{identity}-{session_id}.ddbya"
     proxy = ReverseProxy(upstream, log_path, programmatic=programmatic, tags=tags,
-                         ollama_model=ollama_model, extra_upstreams=extra_upstreams,
-                         deepseek=deepseek)
+                         extra_upstreams=extra_upstreams, deepseek=deepseek)
     proxy.start()
 
     env = os.environ.copy()
@@ -732,22 +689,12 @@ def main():
         env["ANTHROPIC_VERTEX_BASE_URL"] = f"{proxy_base}/--vertex"
     if "/--foundry" in extra_upstreams:
         env["ANTHROPIC_FOUNDRY_BASE_URL"] = f"{proxy_base}/--foundry"
-    if ollama_model:
-        env["ANTHROPIC_AUTH_TOKEN"] = "ollama"
-        env.pop("ANTHROPIC_API_KEY", None)
-    elif deepseek:
-        if env.get("ANTHROPIC_AUTH_TOKEN") == "ollama":
-            env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    if deepseek:
         for key, value in os.environ.items():
             if key.startswith("DEEPSEEK_") and key != "DEEPSEEK_BASE_URL":
                 env["ANTHROPIC_" + key[len("DEEPSEEK_"):]] = value
         env["CLAUDE_CODE_SUBAGENT_MODEL"] = "deepseek-v4-flash"
         env["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
-    else:
-        # Clear Ollama auth so Claude Code uses its normal keychain/OAuth login
-        if env.get("ANTHROPIC_AUTH_TOKEN") == "ollama":
-            env.pop("ANTHROPIC_AUTH_TOKEN", None)
-            env.pop("ANTHROPIC_API_KEY", None)
 
     # Restore default SIGINT behaviour so Ctrl+C is forwarded to claude naturally.
     # Python installs its own SIGINT handler that raises KeyboardInterrupt;
