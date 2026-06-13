@@ -2,7 +2,7 @@
 
 It's easy to recognise the cost effectiveness of using modern AI vs, for example, coding by hand. That doesn't mean, however, that one can use it indiscriminately without keeping track of how many tokens they're burning. The features native of your cloud provider of choice - say, an Anthropic Claude subscription - won't always enable you to distinguish consumption between one project and another. This is particularly important when you need  to charge your clients fairly and proportionally to the use associated to their respective projects.
 
-dolla-dolla-bill-y-all is a zero-dependency reverse proxy that intercepts Claude Code API calls to log token consumption. Every request is forwarded transparently — the tool adds no perceptible latency — while usage data is written to a project-local JSONL file for cost monitoring and analysis.
+dolla-dolla-bill-y-all is a zero-dependency reverse proxy that intercepts Claude Code API calls to log token consumption. Every request is forwarded transparently — the tool adds no perceptible latency — while usage data is written to a project-local JSONL file for analysis.
 
 ## Installation
 
@@ -25,9 +25,6 @@ ddbya --model sonnet         # any claude flags are forwarded
 ddbya -o deepseek-v4-pro:cloud
 ddbya -o deepseek-v4-pro:cloud -p "explain this"
 
-# Budget limit -- refuse to launch / refuse new requests once exceeded
-ddbya --limit 20 --last 7    # cap spend at $20 over the last 7 days
-
 # Tags -- label consumption for cross-project tracking
 ddbya -t "reviewing PR #123"
 ddbya -t "client-acme" -t "urgent"   # multiple tags per session
@@ -37,14 +34,14 @@ With `-o`/`--ollama-model`, the wrapper automatically sets the upstream to `OLLA
 
 ### Directory layout
 
-`--limit` and `--tag` key off a simple directory convention: group each client's projects under a shared parent folder. `ddbya-report` is recursive instead, starting from any folder.
+`--tag` and reporting key off a simple directory convention: group each client's projects under a shared parent folder. `ddbya-report` is recursive, starting from any folder.
 
 ```
 projects/                     ← cd here, run ddbya-report . # report all consumption, divided by clients vs internal  
 ├── clients/                  ← cd here, run ddbya-report . # report all consumption, divided by client
 │   └─── client-acme/         ← cd here, run ddbya-report . # report all consumption for client-acme, divided by project
-│   │  ├── web-frontend/      ← cd here, run ddbya -t "code review" # launch Claude Code in this project and tag consumption as "code review"
-│   │  └── api-backend/       ← cd here, run ddbya --limit 20 --last 7 # launch Claude Code and limit spend to 20 USD for client-acme (not just api-backend) this week
+│   │  ├── web-frontend/      ← cd here, run ddbya -t "code review"
+│   │  └── api-backend/       ← cd here, run ddbya -t "client-acme"
 │   └─── client-baker/
 │      ├── mobile-app/
 │      └── data-pipeline/
@@ -52,29 +49,8 @@ projects/                     ← cd here, run ddbya-report . # report all consu
     └── dolla-dolla-bill-y-all/
 ```
 
-- **Budget scope** — `--limit` scans the current project and its sibling directories under the same parent. Keep all of a client's projects in one folder and the budget cap applies to that client only.
-- **Tags** — `-t` labels every entry in a session so `ddbya-report` can filter by tag later, even across projects in different parent / client folders, e.g. to see how many tokens I've spent on "code review" across all clients.
+- **Tags** — `-t` labels every entry in a session so `ddbya-report` can filter by tag later, even across projects in different parent / client folders, e.g. to see how many tokens were spent on "code review" across all clients.
 - **Reporting** — point `ddbya-report` at a parent folder to aggregate across all its sub-projects, or at a single project folder to isolate one.
-
-## Pricing accuracy
-
-ddbya tracks Anthropic's pricing historically in a project-local `.ddbya.d/pricing.ddbya` file. When reporting costs, each log entry is priced at the rate that applied on the day it was logged — not today's rate.
-
-On first run in a new project directory, ddbya silently writes `.ddbya.d/pricing.ddbya` from pricing data embedded in the script itself. No network call, no prompt. To fetch current tariffs from `anthropic.com/pricing` (using Haiku with web search), pass `--pricing` at launch:
-
-```sh
-ddbya --pricing          # fetch live pricing, then start the session
-```
-
-If the live fetch fails or returns unparseable output, ddbya exits — the session does not launch, and any existing `.ddbya.d/pricing.ddbya` is left untouched. Run without `--pricing` to fall back to the embedded data silently.
-
-`.ddbya.d/pricing.ddbya` is committed to the repository because it is the master reference for pricing that is maintained in this repo, and is used as the default when ddbya is deployed elsewhere.
-
-**Price-change dates are approximated.** Anthropic does not publish the date on which each price tier became effective, so ddbya cannot know when a tariff actually changed. When a fetch reveals that a model's price has changed since the last fetch, ddbya seals the old record at *yesterday* and starts the new record from *today* — even if the real change happened weeks earlier. The practical consequence: log entries between the actual change date and the fetch date are priced at the *old* rate (because the old record's `to` field still covers them). If you fetch frequently this drift is small; if you let pricing data go stale for months, entries in that window may be mispriced. Fetch sooner if you suspect Anthropic has revised tariffs.
-
-**Provider-specific surcharges are not supported.** ddbya only tracks Anthropic's published per-token prices. Deployments that carry additional charges — such as AWS Bedrock regional endpoints, third-party API proxies, or enterprise agreements with custom rates — will report costs lower than actually billed. There is currently no way to configure a surcharge multiplier or an alternative price schedule.
-
-**DeepSeek cache writes are priced at the input rate.** DeepSeek's pricing model has only two input tiers — cache miss (full price) and cache hit (heavily discounted) — with no separate cache-write charge. A newly-cached token is a cache miss, so ddbya prices any `cache_creation_input_tokens` at the same rate as `input_tokens`. If DeepSeek's Anthropic-compatible endpoint never populates `cache_creation_input_tokens` (likely, since the concept doesn't exist in their model), this costs nothing extra; if it does, the cost is correct rather than silently zero.
 
 ## Cloud-provider backends
 
@@ -94,18 +70,6 @@ ddbya reads these URLs on startup, overrides them with proxy paths (`/--bedrock`
 
 **Limitation:** native-SDK backends (e.g. `CLAUDE_CODE_USE_BEDROCK=1` without a gateway URL) route through Claude Code's internal SDK and do not reach the proxy. ddbya cannot intercept those requests without a format-translation layer.
 
-## Budget limits
-
-`-l`/`--limit <USD>` together with `--last <days>` puts a soft cap on spend across **all sibling projects under the parent directory**, computed from each project's `.ddbya.d/usage-*.ddbya` files using the historical pricing from `.ddbya.d/pricing.ddbya` (or the built-in table as fallback).
-
-Behaviour:
-
-- **At launch:** if recent spend is already at or above the limit, ddbya refuses to start the session.
-- **During the session:** spend is re-checked every minute. Warnings are printed to stderr when spend crosses 80%, 85%, 90%, and each integer percentage from 95% upwards (crossing, not landing — spend can jump several points between ticks). If a session starts already past one or more thresholds, a single warning is shown at the highest crossed threshold. Warnings are deferred while a request is in flight (claude's TUI would otherwise repaint over them) and flushed on the next tick where the proxy is idle.
-- **Once 100% is crossed mid-session:** the proxy starts replying to any *new* API call with HTTP 429 (a synthetic Anthropic-style error). Already in-flight requests are allowed to complete normally. Once the in-flight count drops to zero, ddbya sends `SIGTERM` to claude, escalating to `SIGKILL` after 30s if needed.
-- **Unrecognised models:** if your `.ddbya.d/usage-*.ddbya` history already mentions a Claude model ddbya doesn't know about (e.g. a release newer than this copy), the pre-flight check refuses to launch and points you at the latest version. If a new unknown model appears mid-session (a sibling project logging a release ddbya hasn't seen), ddbya warns, falls back to Sonnet pricing as an approximation, and exits with status 1 at the end of the session.
-- **Not supported with `-o`/`--ollama-model`** (no public pricing for arbitrary Ollama models).
-
 ## Output
 
 Every API call appends a line to `.ddbya.d/usage-<identity>.ddbya` in the current working directory, where `<identity>` is derived from `git config user.email` (or `$USER` as fallback). Each contributor writes to their own file, so parallel work and PR merges never conflict:
@@ -118,7 +82,7 @@ Every API call appends a line to `.ddbya.d/usage-<identity>.ddbya` in the curren
 
 When `-t`/`--tag` is used, entries include a `"tags"` list. Tags let you associate consumption with a purpose (e.g. a PR review, a client project, an experiment) independently of the folder the session ran in.
 
-When Claude Code is invoked with `-p`/`--print` (non-interactive mode), entries include `"programmatic": true`. This matters because Anthropic subscriptions starting 15 June 2026 bill programmatic and interactive usage at different rates. The field lets you separate the two when analysing costs.
+When Claude Code is invoked with `-p`/`--print` (non-interactive mode), entries include `"programmatic": true`.
 
 **Subscription "extra usage" is tracked.** When a subscription plan exhausts its included session or weekly allowance and tips into extra usage (billed at standard pay-per-use rates), ddbya detects the transition from the `rate_limit_event` SSE event that Anthropic includes in every streaming response (specifically `rate_limit_info.isUsingOverage`). Affected entries are logged with `billing_mode: "anthropic_subscription_overage"` and counted toward budget limits and cost reports at standard pay-per-use rates. This detection applies to streaming responses, which is what Claude Code uses in practice; non-streaming subscription requests are always logged as `"anthropic_subscription"` regardless of overage state.
 
@@ -154,21 +118,21 @@ ddbya-report . --last 7
 ```
 Token Usage Report — 2026-05-08 to 2026-05-14
 
-Project                 Model                      Programmatic  Reqs  Input (base)  Cache Read  Cache Create  Total Input  Output Tokens  Cost (USD)  Tags
-──────────────────────  ─────────────────────────  ────────────  ────  ────────────  ──────────  ────────────  ───────────  ─────────────  ──────────  ────────────────────────────────────────────────────
-dolla-dolla-bill-y-all  claude-haiku-4-5-20251001  no              63        24,008      67,861        29,128      120,997          2,002       $0.08
-dolla-dolla-bill-y-all  claude-haiku-4-5-20251001  no               4           702           -             -          702             28       $0.00  code review | ddbya core dev
-dolla-dolla-bill-y-all  claude-haiku-4-5-20251001  no               2           347           -             -          347             11       $0.00  code review | ddbya core dev | Steve's tags request
-dolla-dolla-bill-y-all  claude-opus-4-7            no             223        12,947  15,505,366       548,058   16,066,371        103,323      $13.83
-dolla-dolla-bill-y-all  claude-opus-4-7            no              82         6,302   7,557,402       204,112    7,767,816         38,860       $6.06  code review | ddbya core dev
-dolla-dolla-bill-y-all  claude-opus-4-7            no              10         1,043     509,891        70,391      581,325          7,025       $0.88  code review | ddbya core dev | Steve's tags request
-dolla-dolla-bill-y-all  claude-sonnet-4-6          no             104         4,740   5,683,220       409,030    6,096,990         28,113       $3.67
-dolla-dolla-bill-y-all  deepseek-v4-pro            no             247    14,400,948           -             -   14,400,948        115,927           -
-dolla-dolla-bill-y-all  deepseek-v4-pro            no             181     7,945,181           -             -    7,945,181         51,676           -  code writing | ddbya core dev
-dolla-dolla-bill-y-all  deepseek-v4-pro            no             114     7,256,808           -             -    7,256,808         29,236           -  code writing | ddbya core dev | Steve's tags request
-(subtotal)                                                       1,030    29,653,026  29,323,740     1,260,719   60,237,485        376,201      $24.51
+Project                 Model                      Programmatic  Reqs  Input (base)  Cache Read  Cache Create  Total Input  Output Tokens  Tags
+──────────────────────  ─────────────────────────  ────────────  ────  ────────────  ──────────  ────────────  ───────────  ─────────────  ────────────────────────────────────────────────────
+dolla-dolla-bill-y-all  claude-haiku-4-5-20251001  no              63        24,008      67,861        29,128      120,997          2,002
+dolla-dolla-bill-y-all  claude-haiku-4-5-20251001  no               4           702           -             -          702             28  code review | ddbya core dev
+dolla-dolla-bill-y-all  claude-haiku-4-5-20251001  no               2           347           -             -          347             11  code review | ddbya core dev | Steve's tags request
+dolla-dolla-bill-y-all  claude-opus-4-7            no             223        12,947  15,505,366       548,058   16,066,371        103,323
+dolla-dolla-bill-y-all  claude-opus-4-7            no              82         6,302   7,557,402       204,112    7,767,816         38,860  code review | ddbya core dev
+dolla-dolla-bill-y-all  claude-opus-4-7            no              10         1,043     509,891        70,391      581,325          7,025  code review | ddbya core dev | Steve's tags request
+dolla-dolla-bill-y-all  claude-sonnet-4-6          no             104         4,740   5,683,220       409,030    6,096,990         28,113
+dolla-dolla-bill-y-all  deepseek-v4-pro            no             247    14,400,948           -             -   14,400,948        115,927
+dolla-dolla-bill-y-all  deepseek-v4-pro            no             181     7,945,181           -             -    7,945,181         51,676  code writing | ddbya core dev
+dolla-dolla-bill-y-all  deepseek-v4-pro            no             114     7,256,808           -             -    7,256,808         29,236  code writing | ddbya core dev | Steve's tags request
+(subtotal)                                                       1,030    29,653,026  29,323,740     1,260,719   60,237,485        376,201
 
-TOTAL                                                            1,030    29,653,026  29,323,740     1,260,719   60,237,485        376,201      $24.51
+TOTAL                                                            1,030    29,653,026  29,323,740     1,260,719   60,237,485        376,201
 ```
 
 ## Shell autocompletion
@@ -211,9 +175,6 @@ ddbya
   │   ├─ path prefix /--vertex  → Vertex AI gateway (billing_mode: google_vertex)
   │   ├─ path prefix /--foundry → Azure Foundry gateway (billing_mode: azure_foundry)
   │   └─ parses usage from streaming (SSE) and non-streaming responses
-  ├─ (with --limit) budget watchdog scans .ddbya.d/usage-*.ddbya every minute
-  │   ├─ warns at 80 / 85 / 90% and each integer % from 95–99
-  │   └─ at 100%: refuses new requests with HTTP 429, then SIGTERMs claude once idle
   └─ on exit: prints summary, exits with claude's return code
 ```
 

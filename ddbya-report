@@ -18,33 +18,12 @@ import os
 import csv
 import json
 import re
-import importlib.util
-import importlib.machinery
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 from pathlib import Path
 
-
-def _load_pricing_from_ddbya():
-    """Pricing lives in ddbya; load it from the sibling file so the two scripts can't drift."""
-    ddbya_path = Path(__file__).resolve().parent / "ddbya"
-    if not ddbya_path.is_file():
-        sys.exit(
-            f"ddbya-report: cannot find sibling 'ddbya' at {ddbya_path}.\n"
-            f"ddbya-report sources pricing from ddbya; install them in the same directory."
-        )
-    loader = importlib.machinery.SourceFileLoader("_ddbya_pricing", str(ddbya_path))
-    spec = importlib.util.spec_from_loader("_ddbya_pricing", loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return (module.MODEL_PRICING, module._DEFAULT_PRICING, module._MODEL_PRICING_PREFIXES,
-            module.SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE, module._FREE_BILLING_MODES,
-            module.load_pricing_records, module.find_pricing_for)
-
-
-(MODEL_PRICING, _DEFAULT_PRICING, _MODEL_PRICING_PREFIXES,
- SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE, _FREE_BILLING_MODES,
- load_pricing_records, find_pricing_for) = _load_pricing_from_ddbya()
+DDBYA_DIR = ".ddbya.d"
+USAGE_GLOB = "usage-*.ddbya"
 
 
 def parse_args():
@@ -145,26 +124,6 @@ def resolve_window(params):
     return from_date, to_date
 
 
-
-def entry_cost(model, input_tokens, output_tokens, cache_read, cache_create,
-               billing_mode=None, programmatic=False, timestamp="", pricing_records=None):
-    ts_date = timestamp[:10]
-    if billing_mode is None or billing_mode in _FREE_BILLING_MODES:
-        return 0.0
-    if billing_mode == "anthropic_subscription":
-        if not (programmatic and ts_date >= SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE):
-            return 0.0
-    pricing = find_pricing_for(model, timestamp, pricing_records or [])
-    if pricing is None:
-        return 0.0
-    return (
-        input_tokens  * pricing["input"]
-        + output_tokens * pricing["output"]
-        + cache_read    * pricing["cache_read"]
-        + cache_create  * pricing["cache_write"]
-    ) / 1_000_000
-
-
 def _match_tag(pattern, tag):
     """If /pattern/, treat as regex; otherwise literal exact match."""
     if pattern.startswith("/") and pattern.endswith("/") and len(pattern) > 2:
@@ -202,7 +161,6 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
             project = root.name or root.resolve().name
         else:
             project = project_dir.relative_to(root).parts[0]
-        project_pricing = load_pricing_records(project_dir)
         try:
             fh = open(jsonl_path, encoding="utf-8")
         except OSError:
@@ -233,24 +191,16 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
                     for pat in tag_filters
                 ):
                     continue
-                inp = entry.get("input_tokens", 0)
-                out = entry.get("output_tokens", 0)
-                cr = entry.get("cache_read_input_tokens", 0)
-                cc = entry.get("cache_creation_input_tokens", 0)
                 usage.append({
                     "project": project,
                     "model": model,
                     "programmatic": programmatic,
                     "billing_mode": billing_mode,
                     "tags": entry_tags,
-                    "input_tokens": inp,
-                    "output_tokens": out,
-                    "cache_read": cr,
-                    "cache_create": cc,
-                    "cost": entry_cost(model, inp, out, cr, cc, billing_mode=billing_mode,
-                                       programmatic=(programmatic == "yes"),
-                                       timestamp=entry.get("timestamp", ""),
-                                       pricing_records=project_pricing),
+                    "input_tokens": entry.get("input_tokens", 0),
+                    "output_tokens": entry.get("output_tokens", 0),
+                    "cache_read": entry.get("cache_read_input_tokens", 0),
+                    "cache_create": entry.get("cache_creation_input_tokens", 0),
                     "requests": 1,
                 })
     return usage
@@ -334,7 +284,7 @@ def retag(root, from_date, to_date, tag_filters, add_tags, remove_tags):
 
 def aggregate(entries):
     key = lambda e: (e["project"], e["model"], e["programmatic"], e["billing_mode"], tuple(e["tags"]))
-    groups = defaultdict(lambda: {"input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_create": 0, "cost": 0.0, "requests": 0})
+    groups = defaultdict(lambda: {"input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_create": 0, "requests": 0})
 
     for e in entries:
         k = key(e)
@@ -343,7 +293,6 @@ def aggregate(entries):
         g["output_tokens"] += e["output_tokens"]
         g["cache_read"] += e["cache_read"]
         g["cache_create"] += e["cache_create"]
-        g["cost"] += e["cost"]
         g["requests"] += e["requests"]
 
     result = []
@@ -363,12 +312,6 @@ def fmt(n):
     if n == 0:
         return "-"
     return f"{n:,}"
-
-
-def fmt_cost(n):
-    if n == 0:
-        return "-"
-    return f"${n:,.2f}"
 
 
 def _col_widths(rows):
@@ -398,7 +341,6 @@ def _col_widths(rows):
     outputs = [fmt(r["output_tokens"]) for r in rows]
     reads = [fmt(r["cache_read"]) for r in rows]
     creates = [fmt(r["cache_create"]) for r in rows]
-    costs = [fmt_cost(r["cost"]) for r in rows]
 
     cols = [
         ("Project",       lw("Project", projects)),
@@ -414,7 +356,6 @@ def _col_widths(rows):
         ("Cache Create",  rw("Cache Create", creates)),
         ("Total Input",   rw("Total Input", totals)),
         ("Output Tokens", rw("Output Tokens", outputs)),
-        ("Cost (USD)",    rw("Cost (USD)", costs)),
     ]
     if show_tags:
         cols.append(("Tags", lw("Tags", all_tags)))
@@ -463,12 +404,10 @@ def report(rows, from_date, to_date):
 
     last_project = None
     proj_input = proj_output = proj_read = proj_create = proj_reqs = 0
-    proj_cost = 0.0
     tot_input = tot_output = tot_read = tot_create = tot_reqs = 0
-    tot_cost = 0.0
 
     def flush_project():
-        nonlocal proj_input, proj_output, proj_read, proj_create, proj_reqs, proj_cost
+        nonlocal proj_input, proj_output, proj_read, proj_create, proj_reqs
         if last_project is not None and proj_reqs:
             vals = [("(subtotal)", "Project")] + _blank + [
                 (fmt(proj_reqs), "Reqs"),
@@ -477,12 +416,10 @@ def report(rows, from_date, to_date):
                 (fmt(proj_create), "Cache Create"),
                 (fmt(proj_input + proj_read + proj_create), "Total Input"),
                 (fmt(proj_output), "Output Tokens"),
-                (fmt_cost(proj_cost), "Cost (USD)"),
             ]
             print(_build_row(vals, cols_by_name))
             print()
         proj_input = proj_output = proj_read = proj_create = proj_reqs = 0
-        proj_cost = 0.0
 
     for r in rows:
         if r["project"] != last_project:
@@ -503,7 +440,6 @@ def report(rows, from_date, to_date):
             (fmt(r["cache_create"]), "Cache Create"),
             (fmt(r["input_tokens"] + r["cache_read"] + r["cache_create"]), "Total Input"),
             (fmt(r["output_tokens"]), "Output Tokens"),
-            (fmt_cost(r["cost"]), "Cost (USD)"),
         ]
         if show_tags:
             vals.append((_join(r["tags"]), "Tags"))
@@ -514,14 +450,12 @@ def report(rows, from_date, to_date):
         proj_read += r["cache_read"]
         proj_create += r["cache_create"]
         proj_reqs += r["requests"]
-        proj_cost += r["cost"]
 
         tot_input += r["input_tokens"]
         tot_output += r["output_tokens"]
         tot_read += r["cache_read"]
         tot_create += r["cache_create"]
         tot_reqs += r["requests"]
-        tot_cost += r["cost"]
 
     flush_project()
 
@@ -532,7 +466,6 @@ def report(rows, from_date, to_date):
         (fmt(tot_create), "Cache Create"),
         (fmt(tot_input + tot_read + tot_create), "Total Input"),
         (fmt(tot_output), "Output Tokens"),
-        (fmt_cost(tot_cost), "Cost (USD)"),
     ]
     print(_build_row(total_vals, cols_by_name))
 
@@ -546,8 +479,7 @@ def csv_report(rows):
     headers = ["Project", "Model", "Programmatic"]
     if show_billing:
         headers.append("Billing Mode")
-    headers += ["Reqs", "Input (base)", "Cache Read", "Cache Create",
-                "Total Input", "Output Tokens", "Cost (USD)"]
+    headers += ["Reqs", "Input (base)", "Cache Read", "Cache Create", "Total Input", "Output Tokens"]
     if show_tags:
         headers.append("Tags")
 
@@ -559,8 +491,7 @@ def csv_report(rows):
         if show_billing:
             row.append(r.get("billing_mode") or "")
         row += [r["requests"], r["input_tokens"], r["cache_read"],
-                r["cache_create"], total_input, r["output_tokens"],
-                f"{r['cost']:.6f}"]
+                r["cache_create"], total_input, r["output_tokens"]]
         if show_tags:
             row.append(" | ".join(r["tags"]) if r["tags"] else "")
         writer.writerow(row)

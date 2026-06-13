@@ -7,7 +7,6 @@ Usage:
     ddbya [claude args...]
     ddbya -o <ollama-model> [claude args...]
     ddbya --deepseek [claude args...]
-    ddbya -l <limit> --last <days> [claude args...]
     ddbya -t <tag> [claude args...]
 
 Options:
@@ -19,10 +18,6 @@ Options:
                                 ANTHROPIC_* equivalent. Defaults upstream to
                                 https://api.deepseek.com/anthropic (overridable
                                 via DEEPSEEK_BASE_URL env var).
-    -l, --limit <USD>          Budget limit in US dollars. Requires --last.
-                                Not supported with -o/--ollama-model.
-    --last <days>              Number of days to look back for budget tracking.
-                                Required when -l/--limit is set.
     -t, --tag <tag>            Tag to label this session's consumption. Can be
                                 given multiple times. Tags are written into
                                 each .ddbya.d/usage-<identity>-<session>.ddbya entry.
@@ -43,628 +38,23 @@ import http.client
 import urllib.parse
 import signal
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 DDBYA_DIR = ".ddbya.d"
-PRICING_FILENAME = "pricing.ddbya"
 USAGE_FILENAME_PREFIX = "usage-"
 USAGE_GLOB = "usage-*.ddbya"
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
 DEEPSEEK_DEFAULT_UPSTREAM = "https://api.deepseek.com/anthropic"
 OLLAMA_DEFAULT_HOST = "127.0.0.1:11434"
 
-_PRICING_FETCH_MODEL = "claude-haiku-4-5-20251001"
-_PRICING_FETCH_PROMPT = (
-    "Output Anthropic API pricing for ALL Claude models, including current "
-    "flagship models AND legacy / deprecated / retired models that are still "
-    "listed (e.g. Opus 4.5, Opus 4.1, Opus 4, Sonnet 4.5, Sonnet 4, Sonnet 3.7, "
-    "Haiku 3.5, Haiku 3). First try web search at https://www.anthropic.com/pricing "
-    "and https://docs.claude.com/en/docs/about-claude/pricing. If web search "
-    "fails or returns no useful results, fall back to your training knowledge "
-    "and still produce the array — do NOT return an empty array. Different "
-    "model generations have different prices (e.g. Opus 4.1 is $15/$75 per "
-    "million while Opus 4.5+ is $5/$25), so do not assume current flagship "
-    "pricing applies to older models. Output ONLY a JSON array of objects, "
-    "one per model, with fields: "
-    'model_prefix (string, e.g. "claude-opus-4-7", "claude-opus-4-1", "claude-haiku-3-5"), '
-    "input (float, USD per million input tokens), "
-    "output (float, USD per million output tokens), "
-    "cache_read (float, USD per million cached read tokens), "
-    "cache_write (float, USD per million cache write tokens at 5-minute TTL). "
-    "No prose, no markdown fences, no explanation. JSON array only."
-)
-
-# Pricing per million tokens (USD), scraped from platform.claude.com/docs/en/about-claude/pricing.
-# Key: model ID prefix → {input, output, cache_write (5m), cache_read}
-# Matched by longest prefix first against the model string returned by the API.
-MODEL_PRICING = {
-    "claude-opus-4-7":   {"input": 5,    "output": 25,  "cache_write": 6.25, "cache_read": 0.50},
-    "claude-opus-4-6":   {"input": 5,    "output": 25,  "cache_write": 6.25, "cache_read": 0.50},
-    "claude-opus-4-5":   {"input": 5,    "output": 25,  "cache_write": 6.25, "cache_read": 0.50},
-    "claude-opus-4-1":   {"input": 15,   "output": 75,  "cache_write": 18.75,"cache_read": 1.50},
-    "claude-opus-4":     {"input": 15,   "output": 75,  "cache_write": 18.75,"cache_read": 1.50},
-    "claude-sonnet-4-6": {"input": 3,    "output": 15,  "cache_write": 3.75, "cache_read": 0.30},
-    "claude-sonnet-4-5": {"input": 3,    "output": 15,  "cache_write": 3.75, "cache_read": 0.30},
-    "claude-sonnet-4":   {"input": 3,    "output": 15,  "cache_write": 3.75, "cache_read": 0.30},
-    "claude-haiku-4-5":  {"input": 1,    "output": 5,   "cache_write": 1.25, "cache_read": 0.10},
-    "claude-haiku-3-5":  {"input": 0.80, "output": 4,   "cache_write": 1.0,  "cache_read": 0.08},
-}
-_DEFAULT_PRICING = MODEL_PRICING["claude-sonnet-4-6"]
-
-# Baseline pricing records embedded in the script. Used to bootstrap .ddbya.d/pricing.ddbya
-# on first run so the file always exists without requiring a network fetch.
-# 'from' dates are conservative lower bounds; run `ddbya --pricing` to refresh live.
-_EMBEDDED_PRICING_RECORDS = [
-    {"provider": "anthropic", "model_prefix": "claude-opus-4-7",   "from": "2026-02-01", "input": 5,    "output": 25,  "cache_read": 0.50, "cache_write": 6.25},
-    {"provider": "anthropic", "model_prefix": "claude-opus-4-6",   "from": "2025-11-01", "input": 5,    "output": 25,  "cache_read": 0.50, "cache_write": 6.25},
-    {"provider": "anthropic", "model_prefix": "claude-opus-4-5",   "from": "2025-09-01", "input": 5,    "output": 25,  "cache_read": 0.50, "cache_write": 6.25},
-    {"provider": "anthropic", "model_prefix": "claude-opus-4-1",   "from": "2025-06-01", "input": 15,   "output": 75,  "cache_read": 1.50, "cache_write": 18.75},
-    {"provider": "anthropic", "model_prefix": "claude-opus-4",     "from": "2025-02-01", "input": 15,   "output": 75,  "cache_read": 1.50, "cache_write": 18.75},
-    {"provider": "anthropic", "model_prefix": "claude-sonnet-4-6", "from": "2025-11-01", "input": 3,    "output": 15,  "cache_read": 0.30, "cache_write": 3.75},
-    {"provider": "anthropic", "model_prefix": "claude-sonnet-4-5", "from": "2025-09-01", "input": 3,    "output": 15,  "cache_read": 0.30, "cache_write": 3.75},
-    {"provider": "anthropic", "model_prefix": "claude-sonnet-4",   "from": "2025-02-01", "input": 3,    "output": 15,  "cache_read": 0.30, "cache_write": 3.75},
-    {"provider": "anthropic", "model_prefix": "claude-haiku-4-5",  "from": "2025-03-01", "input": 1,    "output": 5,   "cache_read": 0.10, "cache_write": 1.25},
-    {"provider": "anthropic", "model_prefix": "claude-haiku-3-5",  "from": "2024-10-01", "input": 0.80, "output": 4,   "cache_read": 0.08, "cache_write": 1.0},
-    # DeepSeek has no separate cache-write price — cache writes are charged at the
-    # cache-miss (input) rate. cache_write is set to input so that if the endpoint
-    # ever populates cache_creation_input_tokens, those tokens are priced correctly.
-    {"provider": "deepseek", "model_prefix": "deepseek-v4-flash", "from": "2026-05-24", "input": 0.14,  "output": 0.28,  "cache_read": 0.0028,   "cache_write": 0.14},
-    {"provider": "deepseek", "model_prefix": "deepseek-v4-pro",   "from": "2026-05-24", "input": 0.435, "output": 0.87,  "cache_read": 0.003625, "cache_write": 0.435},
-    {"provider": "deepseek", "model_prefix": "deepseek-chat",     "from": "2026-05-24", "input": 0.14,  "output": 0.28,  "cache_read": 0.0028,   "cache_write": 0.14},
-    {"provider": "deepseek", "model_prefix": "deepseek-reasoner", "from": "2026-05-24", "input": 0.14,  "output": 0.28,  "cache_read": 0.0028,   "cache_write": 0.14},
-]
-
-# Sorted keys for longest-prefix-first matching
-_MODEL_PRICING_PREFIXES = sorted(MODEL_PRICING.keys(), key=len, reverse=True)
-
-# Anthropic subscription programmatic usage is only billed from this date onwards.
-SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE = "2026-06-15"
-
-# Billing modes that are always free — no cost regardless of token counts.
-# Everything else (including unknown future modes) is treated as chargeable.
-_FREE_BILLING_MODES = frozenset({"ollama", "ollama_subscription"})
-
-# Budget warning thresholds (percent of limit). Below 100% only — at/above 100%
-# the exceeded message (pre-flight or watchdog) carries the same info.
-_BUDGET_WARN_THRESHOLDS = (80, 85, 90, 95, 96, 97, 98, 99)
-
-
-def load_pricing_records(project_dir):
-    """Load all records from .ddbya.d/pricing.ddbya in project_dir. Returns list, empty if missing."""
-    path = Path(project_dir) / DDBYA_DIR / PRICING_FILENAME
-    records = []
-    if not path.exists():
-        return records
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    records.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
-    except OSError:
-        pass
-    return records
-
-
-def find_pricing_for(model, timestamp, pricing_records):
-    """Return pricing dict for model at the date of timestamp, using historical records.
-
-    Finds the most-recent record whose 'from' date is <= the entry date. Searches
-    all providers (Anthropic, DeepSeek, etc.) in the records. Falls back to the
-    hardcoded MODEL_PRICING table for Anthropic models only.
-    Returns None if no pricing could be determined.
-    """
-    ts_date = timestamp[:10] if timestamp else ""
-
-    if pricing_records and ts_date:
-        prefixes = sorted(
-            {r["model_prefix"] for r in pricing_records if "model_prefix" in r},
-            key=len, reverse=True,
-        )
-        for prefix in prefixes:
-            if model == prefix or model.startswith(prefix + "-"):
-                candidates = sorted(
-                    [r for r in pricing_records if r.get("model_prefix") == prefix],
-                    key=lambda r: r.get("from", ""),
-                )
-                match = None
-                for r in candidates:
-                    if r.get("from", "") <= ts_date:
-                        match = r
-                if match:
-                    return {k: match[k] for k in ("input", "output", "cache_read", "cache_write")}
-
-    # Fall back to hardcoded table (Anthropic models only)
-    for prefix in _MODEL_PRICING_PREFIXES:
-        if model == prefix or model.startswith(prefix + "-"):
-            return MODEL_PRICING[prefix]
-    if model.startswith("claude-"):
-        return _DEFAULT_PRICING
-    return None
-
-
-def _merge_pricing_records(existing, fetched, today_str):
-    """Merge freshly-fetched pricing into existing records.
-
-    For each model in fetched: if pricing is unchanged, bumps the latest record's
-    'to' date to today_str; if changed, seals the old record at yesterday and
-    appends a new one starting today.
-    """
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    yesterday = (datetime.strptime(today_str, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
-    price_keys = ("input", "output", "cache_read", "cache_write")
-
-    records = [dict(r) for r in existing]
-
-    for item in fetched:
-        prefix = item.get("model_prefix")
-        if not prefix:
-            continue
-        new_price = {k: item[k] for k in price_keys if k in item}
-        if len(new_price) < len(price_keys):
-            continue
-
-        anthro_for_prefix = [
-            r for r in records
-            if r.get("provider") == "anthropic" and r.get("model_prefix") == prefix
-        ]
-        if anthro_for_prefix:
-            latest = max(anthro_for_prefix, key=lambda r: r.get("from", ""))
-            old_price = {k: latest[k] for k in price_keys if k in latest}
-            if old_price == new_price:
-                latest["to"] = today_str
-                latest["fetched_at"] = now_iso
-            else:
-                latest["to"] = yesterday
-                records.append({
-                    "provider": "anthropic",
-                    "model_prefix": prefix,
-                    "from": today_str,
-                    "to": today_str,
-                    "fetched_at": now_iso,
-                    **new_price,
-                })
-        else:
-            records.append({
-                "provider": "anthropic",
-                "model_prefix": prefix,
-                "from": today_str,
-                "to": today_str,
-                "fetched_at": now_iso,
-                **new_price,
-            })
-
-    return records
-
-
-def _fetch_pricing():
-    """Run claude -p to fetch current Anthropic pricing. Returns list of dicts or None."""
-    stop_spinner = threading.Event()
-
-    def _spinner():
-        frames = "⣾⣽⣻⢿⡿⣟⣯⣷"
-        msg = "ddbya: fetching pricing from anthropic.com/pricing"
-        i = 0
-        while not stop_spinner.wait(0.1):
-            print(f"\r{frames[i % len(frames)]} {msg}…", end="", file=sys.stderr, flush=True)
-            i += 1
-        print(f"\r\033[K", end="", file=sys.stderr, flush=True)
-
-    spin_thread = threading.Thread(target=_spinner, daemon=True)
-    spin_thread.start()
-    try:
-        result = subprocess.run(
-            ["claude", "-p", "--tools", "WebSearch", "--model", _PRICING_FETCH_MODEL, _PRICING_FETCH_PROMPT],
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
-    except FileNotFoundError:
-        stop_spinner.set()
-        spin_thread.join()
-        print("ddbya: 'claude' not found; cannot fetch pricing.", file=sys.stderr)
-        return None
-    except subprocess.TimeoutExpired:
-        stop_spinner.set()
-        spin_thread.join()
-        print("ddbya: pricing fetch timed out after 180s.", file=sys.stderr)
-        return None
-    finally:
-        stop_spinner.set()
-        spin_thread.join()
-
-    if result.returncode != 0:
-        print(f"ddbya: pricing fetch exited {result.returncode}.", file=sys.stderr)
-        return None
-
-    text = result.stdout.strip()
-
-    # Try direct parse first
-    try:
-        data = json.loads(text)
-        if isinstance(data, list):
-            return data
-    except (json.JSONDecodeError, ValueError):
-        pass
-
-    # Walk the text scanning for balanced JSON arrays (skips brackets in strings,
-    # ignores markdown fences, sources lists, and other prose around the array).
-    start = 0
-    while True:
-        start = text.find("[", start)
-        if start == -1:
-            break
-        depth = 0
-        in_string = False
-        escape = False
-        for i in range(start, len(text)):
-            c = text[i]
-            if escape:
-                escape = False
-                continue
-            if c == "\\":
-                escape = True
-                continue
-            if c == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if c == "[":
-                depth += 1
-            elif c == "]":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        data = json.loads(text[start:i + 1])
-                        if isinstance(data, list):
-                            return data
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                    break
-        start += 1
-
-    print("ddbya: pricing fetch returned unparseable output.", file=sys.stderr)
-    return None
-
-
-def maybe_update_pricing(project_dir, force=False):
-    """Ensure .ddbya.d/pricing.ddbya exists, optionally refreshing via live fetch.
-
-    If the file is absent, bootstraps it silently from _EMBEDDED_PRICING_RECORDS.
-    With force=True (--pricing flag), fetches live pricing from anthropic.com
-    unconditionally and merges results in.
-    Returns the (possibly updated) list of pricing records.
-    """
-    ddbya_dir = Path(project_dir) / DDBYA_DIR
-    ddbya_dir.mkdir(exist_ok=True)
-    pricing_path = ddbya_dir / PRICING_FILENAME
-    records = load_pricing_records(project_dir)
-
-    if not pricing_path.exists():
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        bootstrapped = [{**r, "to": today, "fetched_at": now_iso} for r in _EMBEDDED_PRICING_RECORDS]
-        try:
-            with open(pricing_path, "w", encoding="utf-8") as fh:
-                for r in bootstrapped:
-                    fh.write(json.dumps(r, sort_keys=True) + "\n")
-            records = bootstrapped
-        except OSError as exc:
-            print(f"ddbya: could not write {pricing_path}: {exc}", file=sys.stderr)
-
-    if not force:
-        return records
-
-    fetched = _fetch_pricing()
-    if not fetched:
-        # Web search can be flaky; one retry covers transient failures.
-        print("ddbya: pricing fetch returned no models; retrying once...", file=sys.stderr)
-        fetched = _fetch_pricing()
-    if fetched is None:
-        sys.exit(1)
-    if not fetched:
-        print("ddbya: pricing fetch returned no models after retry.", file=sys.stderr)
-        sys.exit(1)
-
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    updated = _merge_pricing_records(records, fetched, today)
-    try:
-        with open(pricing_path, "w", encoding="utf-8") as fh:
-            for r in updated:
-                fh.write(json.dumps(r, sort_keys=True) + "\n")
-    except OSError as exc:
-        print(f"ddbya: could not write {pricing_path}: {exc}", file=sys.stderr)
-        return records
-
-    return updated
-
-
-class BudgetChecker:
-    """Periodically scans .ddbya.d/usage-*.ddbya across sibling projects to enforce a budget."""
-
-    def __init__(self, limit_usd, lookback_days, project_dir,
-                 check_interval=60, on_exceeded=None, is_idle=None, pricing_records=None):
-        self._limit_usd = limit_usd
-        self._lookback = timedelta(days=lookback_days)
-        self._project_dir = Path(project_dir).resolve()
-        self._parent_dir = self._project_dir.parent
-        self._check_interval = check_interval
-        self._on_exceeded = on_exceeded
-        # Optional callable returning True when it's safe to print a warning
-        # (no in-flight proxied requests, so claude's TUI is not actively
-        # repainting on top of our stderr output). If None, warnings print
-        # immediately on every threshold crossing.
-        self._is_idle = is_idle
-        # When a threshold is crossed but the proxy is busy, we set this flag
-        # and re-render the message at flush time using the current cost — so
-        # the user sees the latest state, not a stale snapshot from earlier.
-        self._warning_pending = False
-        self._lock = threading.Lock()
-        self._current_cost = 0.0
-        self._limit_exceeded = False
-        self._last_notified_pct = -1
-        self._unknown_models = set()
-        self._warned_models = set()
-        self._pricing_records = pricing_records or []
-        self._running = False
-        self._thread = None
-        self._first_check_done = threading.Event()
-        # Set on stop() to break out of the inter-tick sleep promptly rather
-        # than waiting up to check_interval seconds.
-        self._stop_event = threading.Event()
-        # Per-file cache: avoids re-reading entire JSONL logs every tick.
-        # path -> {"mtime": float, "offset": int, "entries": [(datetime, float)]}.
-        # Only newly-appended bytes are read; old entries are pruned once they
-        # fall outside the budget window.
-        self._file_cache = {}
-
-    def start(self):
-        self._running = True
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        self._running = False
-        self._stop_event.set()
-
-    def wait_first_check(self):
-        self._first_check_done.wait()
-
-    @property
-    def limit_exceeded(self):
-        with self._lock:
-            return self._limit_exceeded
-
-    @property
-    def current_cost(self):
-        with self._lock:
-            return self._current_cost
-
-    @property
-    def unknown_models(self):
-        with self._lock:
-            return sorted(self._unknown_models)
-
-    def _run(self):
-        self._check()
-        self._first_check_done.set()
-        while self._running:
-            if self._stop_event.wait(self._check_interval):
-                break
-            self._check()
-
-    def _check(self):
-        now = datetime.now(timezone.utc)
-        since = now - self._lookback
-
-        log_files = []
-
-        def _usage_files_in(project_path):
-            d = project_path / DDBYA_DIR
-            if d.is_dir():
-                return sorted(d.glob(USAGE_GLOB))
-            return []
-
-        # Current project
-        log_files.extend(_usage_files_in(self._project_dir))
-
-        # Sibling projects in the parent directory
-        if self._parent_dir.exists():
-            try:
-                for entry in self._parent_dir.iterdir():
-                    if not entry.is_dir() or entry.resolve() == self._project_dir:
-                        continue
-                    log_files.extend(_usage_files_in(entry))
-            except PermissionError:
-                pass
-
-        total_cost = 0.0
-        for f in log_files:
-            total_cost += self._cost_from_file(f, since)
-
-        # Drop cache entries for files that have vanished since the last tick.
-        live = set(log_files)
-        for path in list(self._file_cache):
-            if path not in live:
-                del self._file_cache[path]
-
-        with self._lock:
-            self._current_cost = total_cost
-
-        if self._limit_usd <= 0:
-            return
-
-        pct = int(total_cost / self._limit_usd * 100)
-
-        # Warn on crossing a threshold rather than landing on it: spend can
-        # jump several percentage points between ticks. On the first tick of a
-        # session that starts already past one or more thresholds, fire a
-        # single warning at the highest crossed threshold so the user is told
-        # once rather than spammed for every threshold below their current pct.
-        if pct < 100:
-            crossed = [t for t in _BUDGET_WARN_THRESHOLDS
-                       if t <= pct and t > self._last_notified_pct]
-            if crossed:
-                self._warning_pending = True
-                self._last_notified_pct = crossed[-1]
-
-        # Flush a pending warning only when the proxy is idle, so claude's
-        # TUI doesn't immediately repaint over it mid-stream. Render at flush
-        # time using the current cost so the user sees the latest state — not
-        # a stale snapshot from the tick on which the threshold was crossed.
-        if self._warning_pending:
-            if self._is_idle is None or self._is_idle():
-                print(
-                    f"\nBudget: ${total_cost:.2f} / ${self._limit_usd:.2f} ({pct}%).",
-                    file=sys.stderr,
-                )
-                self._warning_pending = False
-
-        if pct >= 100:
-            fire_callback = False
-            with self._lock:
-                if not self._limit_exceeded:
-                    fire_callback = True
-                self._limit_exceeded = True
-            if fire_callback and self._on_exceeded is not None:
-                try:
-                    self._on_exceeded()
-                except Exception:
-                    pass
-
-    def _cost_from_file(self, filepath, since):
-        try:
-            st = filepath.stat()
-        except OSError:
-            return 0.0
-
-        cache = self._file_cache.get(filepath)
-        if cache is None:
-            cache = {"mtime": 0.0, "offset": 0, "entries": []}
-            self._file_cache[filepath] = cache
-
-        # File rotated or truncated — discard cached state and start over.
-        if st.st_size < cache["offset"]:
-            cache["offset"] = 0
-            cache["entries"] = []
-            cache["mtime"] = 0.0
-
-        if st.st_size > cache["offset"] or st.st_mtime != cache["mtime"]:
-            try:
-                with open(filepath, "rb") as f:
-                    f.seek(cache["offset"])
-                    while True:
-                        line = f.readline()
-                        if not line:
-                            break
-                        if not line.endswith(b"\n"):
-                            # Partial write at EOF — leave it for the next tick.
-                            f.seek(-len(line), 1)
-                            break
-                        try:
-                            entry = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        ts_raw = entry.get("timestamp", "")
-                        if not isinstance(ts_raw, str):
-                            continue
-                        try:
-                            entry_time = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
-                        except ValueError:
-                            continue
-                        cache["entries"].append((entry_time, self._entry_cost(entry)))
-                    cache["offset"] = f.tell()
-                cache["mtime"] = st.st_mtime
-            except OSError:
-                return 0.0
-
-        # Sum within window; prune anything older so the cache stays bounded.
-        total = 0.0
-        keep = []
-        for ts, cost in cache["entries"]:
-            if ts >= since:
-                total += cost
-                keep.append((ts, cost))
-        cache["entries"] = keep
-        return total
-
-    def _entry_cost(self, entry):
-        billing_mode = entry.get("billing_mode")
-        programmatic = entry.get("programmatic", False)
-        ts_date = entry.get("timestamp", "")[:10]
-        if billing_mode is None or billing_mode in _FREE_BILLING_MODES:
-            return 0.0
-        if billing_mode == "anthropic_subscription":
-            if not (programmatic and ts_date >= SUBSCRIPTION_PROGRAMMATIC_BILLING_DATE):
-                return 0.0
-
-        model = entry.get("model", "")
-        input_tokens = entry.get("input_tokens", 0)
-        output_tokens = entry.get("output_tokens", 0)
-        cache_read = entry.get("cache_read_input_tokens", 0)
-        cache_create = entry.get("cache_creation_input_tokens", 0)
-
-        pricing = self._find_pricing(model, entry.get("timestamp", ""))
-        if pricing is None:
-            return 0.0
-
-        cost = (
-            input_tokens  * pricing["input"]
-            + output_tokens * pricing["output"]
-            + cache_read    * pricing["cache_read"]
-            + cache_create  * pricing["cache_write"]
-        )
-        return cost / 1_000_000
-
-    def _find_pricing(self, model, timestamp=""):
-        pricing = find_pricing_for(model, timestamp, self._pricing_records)
-        if pricing is not None:
-            # Track unknown models: find_pricing_for falls back to _DEFAULT_PRICING
-            # for unrecognised claude-* models, but we still want to warn.
-            known = any(
-                model == p or model.startswith(p + "-")
-                for p in _MODEL_PRICING_PREFIXES
-            )
-            known_in_records = any(
-                (model == r.get("model_prefix") or model.startswith((r.get("model_prefix") or "") + "-"))
-                for r in self._pricing_records
-            )
-            if not known and not known_in_records and model.startswith("claude-"):
-                should_warn = False
-                with self._lock:
-                    self._unknown_models.add(model)
-                    if model not in self._warned_models:
-                        self._warned_models.add(model)
-                        should_warn = True
-                # Suppress the inline warning during the pre-flight check: main()
-                # exits before claude is launched if unknown models are present,
-                # so the "session will finish" wording would be a lie. After the
-                # first check, claude is running and the wording is accurate.
-                if should_warn and self._first_check_done.is_set():
-                    print(
-                        f"\nUnrecognised Claude model '{model}' — session will finish but ddbya will then exit.\n"
-                        f"Download the latest version:\n"
-                        f"  curl -o ddbya https://raw.githubusercontent.com/giacecco/dolla-dolla-bill-y-all/main/ddbya",
-                        file=sys.stderr,
-                    )
-        return pricing
-
 
 def parse_args(argv):
-    """Extract wrapper-specific flags, return (ollama_model, deepseek, limit_usd, lookback_days, tags, list_tags, force_pricing, remaining_args_for_claude)."""
+    """Extract wrapper-specific flags, return (ollama_model, deepseek, tags, list_tags, remaining_args_for_claude)."""
     ollama_model = None
     deepseek = False
-    limit_usd = None
-    lookback_days = None
     tags = []
     list_tags = False
-    force_pricing = False
     claude_args = []
     i = 0
     while i < len(argv):
@@ -683,40 +73,6 @@ def parse_args(argv):
             ollama_model = val
             i += 2
             continue
-        elif arg in ("-l", "--limit"):
-            if limit_usd is not None:
-                print("error: -l/--limit given more than once", file=sys.stderr)
-                sys.exit(1)
-            if i + 1 >= len(argv):
-                print("error: -l/--limit requires a USD amount", file=sys.stderr)
-                sys.exit(1)
-            try:
-                limit_usd = float(argv[i + 1])
-            except ValueError:
-                print(f"error: invalid limit value: {argv[i + 1]!r}", file=sys.stderr)
-                sys.exit(1)
-            if limit_usd <= 0:
-                print(f"error: limit must be positive: {limit_usd}", file=sys.stderr)
-                sys.exit(1)
-            i += 2
-            continue
-        elif arg == "--last":
-            if lookback_days is not None:
-                print("error: --last given more than once", file=sys.stderr)
-                sys.exit(1)
-            if i + 1 >= len(argv):
-                print("error: --last requires a number of days", file=sys.stderr)
-                sys.exit(1)
-            try:
-                lookback_days = int(argv[i + 1])
-            except ValueError:
-                print(f"error: invalid --last value: {argv[i + 1]!r}", file=sys.stderr)
-                sys.exit(1)
-            if lookback_days <= 0:
-                print(f"error: --last must be positive: {lookback_days}", file=sys.stderr)
-                sys.exit(1)
-            i += 2
-            continue
         elif arg in ("-t", "--tag"):
             if i + 1 >= len(argv):
                 print("error: -t/--tag requires a value", file=sys.stderr)
@@ -728,10 +84,6 @@ def parse_args(argv):
             list_tags = True
             i += 1
             continue
-        elif arg == "--pricing":
-            force_pricing = True
-            i += 1
-            continue
         elif arg == "--deepseek":
             deepseek = True
             i += 1
@@ -739,20 +91,7 @@ def parse_args(argv):
         claude_args.append(arg)
         i += 1
 
-    if list_tags:
-        return ollama_model, deepseek, limit_usd, lookback_days, tags, list_tags, force_pricing, claude_args
-
-    if limit_usd is not None and lookback_days is None:
-        print("error: --limit requires --last <days>", file=sys.stderr)
-        sys.exit(1)
-    if lookback_days is not None and limit_usd is None:
-        print("error: --last requires --limit <USD>", file=sys.stderr)
-        sys.exit(1)
-    if limit_usd is not None and ollama_model is not None:
-        print("error: -l/--limit is not supported with -o/--ollama-model", file=sys.stderr)
-        sys.exit(1)
-
-    return ollama_model, deepseek, limit_usd, lookback_days, tags, list_tags, force_pricing, claude_args
+    return ollama_model, deepseek, tags, list_tags, claude_args
 
 
 def _find_tag_root(start_dir):
@@ -846,7 +185,7 @@ def _resolve_identity():
 
 
 def _migrate_legacy_layout(project_dir, identity, session_id):
-    """Move legacy .token-usage.ddbya and .pricing.ddbya into .ddbya.d/ if present.
+    """Move legacy .token-usage.ddbya into .ddbya.d/ if present.
 
     Idempotent: safe to call on every startup.
     """
@@ -859,15 +198,6 @@ def _migrate_legacy_layout(project_dir, identity, session_id):
         target = ddbya_dir / f"{USAGE_FILENAME_PREFIX}{identity}-{session_id}.ddbya"
         legacy_usage.rename(target)
         print(f"ddbya: migrated {legacy_usage.name} → {ddbya_dir.name}/{target.name}", file=sys.stderr)
-
-    legacy_pricing = project_dir / ".pricing.ddbya"
-    if legacy_pricing.exists():
-        target = ddbya_dir / PRICING_FILENAME
-        if target.exists():
-            legacy_pricing.unlink()
-        else:
-            legacy_pricing.rename(target)
-        print(f"ddbya: migrated {legacy_pricing.name} → {ddbya_dir.name}/{PRICING_FILENAME}", file=sys.stderr)
 
 
 def is_programmatic_invocation(claude_args):
@@ -922,7 +252,6 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
     tags = None
     ollama_model = None
     deepseek = False
-    proxy = None
     # path_prefix → {billing_mode, scheme, netloc, base_path} for cloud-provider backends
     extra_upstreams = None
 
@@ -969,49 +298,8 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             return "anthropic_api"
         return None
 
-    def _refuse_budget_exceeded(self):
-        """Reply with a synthetic Anthropic-style error so claude surfaces it cleanly."""
-        content_length = int(self.headers.get("Content-Length", 0))
-        if content_length:
-            try:
-                self.rfile.read(content_length)
-            except OSError:
-                pass
-        body = json.dumps({
-            "type": "error",
-            "error": {
-                "type": "overloaded_error",
-                "message": "ddbya: budget limit exceeded; new requests are blocked.",
-            },
-        }).encode()
-        try:
-            self.send_response(429, "Too Many Requests")
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            # We may not have drained the request body fully (chunked encoding
-            # bypasses Content-Length), so close the connection rather than
-            # try to keep it alive in an indeterminate state.
-            self.send_header("Connection", "close")
-            self.close_connection = True
-            self.end_headers()
-            self.wfile.write(body)
-        except OSError:
-            pass
-
     def _forward(self, method):
-        # TOCTOU: the budget could become exceeded between is_set() and
-        # begin_request(), allowing one request to slip through. This is
-        # intentional — budget enforcement is best-effort, not a hard stop.
-        if self.proxy is not None and self.proxy.budget_exceeded.is_set():
-            self._refuse_budget_exceeded()
-            return
-        if self.proxy is not None:
-            self.proxy.begin_request()
-        try:
-            self._do_forward(method)
-        finally:
-            if self.proxy is not None:
-                self.proxy.end_request()
+        self._do_forward(method)
 
     def _do_forward(self, method):
         # Read the request body. Only Content-Length bodies are supported;
@@ -1312,33 +600,6 @@ class ReverseProxy:
         self._server = None
         self._thread = None
 
-        # Coordinates graceful shutdown when a budget limit is exceeded:
-        # budget_exceeded → handler refuses new requests; idle Event allows
-        # the watchdog to wait until in-flight requests have drained.
-        self.budget_exceeded = threading.Event()
-        self._in_flight = 0
-        self._in_flight_lock = threading.Lock()
-        self._idle = threading.Event()
-        self._idle.set()
-
-    def begin_request(self):
-        with self._in_flight_lock:
-            self._in_flight += 1
-            self._idle.clear()
-
-    def end_request(self):
-        with self._in_flight_lock:
-            self._in_flight -= 1
-            if self._in_flight == 0:
-                self._idle.set()
-
-    def wait_idle(self):
-        self._idle.wait()
-
-    @property
-    def is_idle(self):
-        return self._idle.is_set()
-
     @property
     def port(self):
         return self._server.server_address[1] if self._server else None
@@ -1371,7 +632,6 @@ class ReverseProxy:
         BoundHandler.tags = proxy.tags
         BoundHandler.ollama_model = proxy.ollama_model
         BoundHandler.deepseek = proxy.deepseek
-        BoundHandler.proxy = proxy
         BoundHandler.extra_upstreams = proxy.extra_upstreams
         return BoundHandler
 
@@ -1423,7 +683,7 @@ def _build_extra_upstreams():
 
 
 def main():
-    ollama_model, deepseek, limit_usd, lookback_days, tags, list_tags, force_pricing, claude_args = parse_args(sys.argv[1:])
+    ollama_model, deepseek, tags, list_tags, claude_args = parse_args(sys.argv[1:])
 
     if list_tags:
         for tag in collect_tags(Path.cwd()):
@@ -1442,7 +702,7 @@ def main():
     programmatic = is_programmatic_invocation(claude_args)
 
     # Resolve the per-user identity and migrate any legacy layout before any
-    # pricing or logging operations so all paths are in the right place.
+    # logging operations so all paths are in the right place.
     identity = _resolve_identity()
     session_id = uuid.uuid4().hex[:8]
     _migrate_legacy_layout(Path.cwd(), identity, session_id)
@@ -1453,48 +713,11 @@ def main():
     # cannot be intercepted without a format-translation layer.
     extra_upstreams = _build_extra_upstreams() if not (ollama_model or deepseek) else {}
 
-    # Pricing bootstrap happens before proxy start so any fetch goes direct to Anthropic.
-    pricing_records = maybe_update_pricing(Path.cwd(), force=force_pricing)
-
     log_path = Path.cwd() / DDBYA_DIR / f"{USAGE_FILENAME_PREFIX}{identity}-{session_id}.ddbya"
     proxy = ReverseProxy(upstream, log_path, programmatic=programmatic, tags=tags,
                          ollama_model=ollama_model, extra_upstreams=extra_upstreams,
                          deepseek=deepseek)
     proxy.start()
-
-    budget_checker = None
-    if limit_usd is not None:
-        budget_checker = BudgetChecker(
-            limit_usd, lookback_days, Path.cwd(),
-            on_exceeded=proxy.budget_exceeded.set,
-            is_idle=lambda: proxy.is_idle,
-            pricing_records=pricing_records,
-        )
-        budget_checker.start()
-        budget_checker.wait_first_check()
-
-        unknown = budget_checker.unknown_models
-        if unknown:
-            print(
-                f"\nUnrecognised model(s) in recent token usage: {', '.join(unknown)}\n"
-                f"Your copy of ddbya may be out of date. Download the latest version:\n"
-                f"  curl -o ddbya https://raw.githubusercontent.com/giacecco/dolla-dolla-bill-y-all/main/ddbya",
-                file=sys.stderr,
-            )
-            proxy.stop()
-            budget_checker.stop()
-            sys.exit(1)
-
-        if budget_checker.limit_exceeded:
-            print(
-                f"Budget limit already exceeded: "
-                f"${budget_checker.current_cost:.2f} / ${limit_usd:.2f} "
-                f"in the last {lookback_days} day(s).",
-                file=sys.stderr,
-            )
-            proxy.stop()
-            budget_checker.stop()
-            sys.exit(1)
 
     env = os.environ.copy()
     proxy_base = f"http://127.0.0.1:{proxy.port}"
@@ -1541,8 +764,6 @@ def main():
         )
     except FileNotFoundError:
         signal.signal(signal.SIGINT, original_sigint)
-        if budget_checker:
-            budget_checker.stop()
         proxy.stop()
         proxy.token_logger.close()
         print(
@@ -1552,65 +773,16 @@ def main():
         )
         sys.exit(127)
 
-    if budget_checker is not None:
-        def _watchdog():
-            proxy.budget_exceeded.wait()
-            print(
-                f"\nBudget limit exceeded "
-                f"(${budget_checker.current_cost:.2f} / ${limit_usd:.2f} "
-                f"in the last {lookback_days} day(s)). "
-                f"New API calls will be refused; the session will end once "
-                f"in-flight requests have completed.",
-                file=sys.stderr,
-            )
-            proxy.wait_idle()
-            proc.terminate()
-            try:
-                proc.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                print(
-                    "claude did not exit within 30s of SIGTERM; sending SIGKILL.",
-                    file=sys.stderr,
-                )
-                proc.kill()
-
-        threading.Thread(target=_watchdog, daemon=True).start()
-
     try:
         exit_code = proc.wait()
     finally:
         signal.signal(signal.SIGINT, original_sigint)
-        if budget_checker:
-            budget_checker.stop()
         proxy.stop()
         proxy.token_logger.close()
 
     input_tokens, output_tokens, cache_read, cache_create, request_count = proxy.token_logger.summary()
     if request_count > 0:
         print(format_summary(input_tokens, output_tokens, cache_read, cache_create, request_count), file=sys.stderr)
-
-    if budget_checker:
-        print(
-            f"\nTotal spend (last {lookback_days} day(s), all projects): "
-            f"${budget_checker.current_cost:.2f} / ${limit_usd:.2f}",
-            file=sys.stderr,
-        )
-        unknown = budget_checker.unknown_models
-        if unknown:
-            print(
-                f"\nUnrecognised model(s) encountered during session: {', '.join(unknown)}\n"
-                f"Your copy of ddbya may be out of date. Download the latest version:\n"
-                f"  curl -o ddbya https://raw.githubusercontent.com/giacecco/dolla-dolla-bill-y-all/main/ddbya",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        if budget_checker.limit_exceeded:
-            print(
-                f"Budget limit was exceeded; further ddbya launches will be "
-                f"refused until spend over the last {lookback_days} day(s) "
-                f"drops below ${limit_usd:.2f}.",
-                file=sys.stderr,
-            )
 
     sys.exit(exit_code)
 
