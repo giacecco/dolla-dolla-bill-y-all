@@ -88,10 +88,12 @@ def _find_tag_root(start_dir):
 
 
 def _collect_tags_from_dir(root_dir):
-    """Recursively collect tags from all usage-*.ddbya files under root_dir."""
+    """Recursively collect tags from all usage-*.ddbya and legacy .token-usage.ddbya files under root_dir."""
     tags = set()
     root = Path(root_dir)
-    for log_file in root.rglob(f"{DDBYA_DIR}/{USAGE_GLOB}"):
+    log_files = list(root.rglob(f"{DDBYA_DIR}/{USAGE_GLOB}"))
+    log_files += [p for p in root.rglob(".token-usage.ddbya")]
+    for log_file in log_files:
         try:
             with open(log_file, encoding="utf-8") as fh:
                 for line in fh:
@@ -417,7 +419,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
         # should not crash the handler; keep parsing usage from upstream so the
         # session totals are still logged. (Caller may already have flipped this
         # to False if header delivery failed before we got here.)
-        pending = b""
+        pending_chunks = []
         while True:
             try:
                 chunk = resp.read(4096)
@@ -433,10 +435,15 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                     self.wfile.flush()
                 except OSError:
                     client_alive = False
-            pending += chunk
-            while b"\n" in pending:
-                raw_line, pending = pending.split(b"\n", 1)
-                process_line(raw_line.decode("utf-8", errors="replace").rstrip("\r"))
+            pending_chunks.append(chunk)
+            if b"\n" in chunk:
+                pending = b"".join(pending_chunks)
+                pending_chunks = []
+                while b"\n" in pending:
+                    raw_line, pending = pending.split(b"\n", 1)
+                    process_line(raw_line.decode("utf-8", errors="replace").rstrip("\r"))
+                if pending:
+                    pending_chunks = [pending]
 
         if is_gzip:
             tail = decompressor.flush()
@@ -447,9 +454,10 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                         self.wfile.flush()
                     except OSError:
                         client_alive = False
-                pending += tail
+                pending_chunks.append(tail)
 
-        if pending:
+        if pending_chunks:
+            pending = b"".join(pending_chunks)
             process_line(pending.decode("utf-8", errors="replace").rstrip("\r"))
 
         if best_input > 0 or best_output > 0:

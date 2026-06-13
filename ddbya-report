@@ -138,8 +138,9 @@ def _discover_usage_paths(root):
     .token-usage.ddbya (legacy) so projects not yet migrated still work.
     """
     direct_dir = root / ".ddbya.d"
-    if direct_dir.is_dir() and sorted(direct_dir.glob("usage-*.ddbya")):
-        for p in sorted(direct_dir.glob("usage-*.ddbya")):
+    usage_files = sorted(direct_dir.glob("usage-*.ddbya")) if direct_dir.is_dir() else []
+    if usage_files:
+        for p in usage_files:
             yield p, root
     else:
         for p in sorted(root.rglob(".ddbya.d/usage-*.ddbya")):
@@ -175,7 +176,9 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
                     ts = datetime.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
                 except (json.JSONDecodeError, KeyError, ValueError):
                     continue
-                if from_date is not None and not (from_date <= ts < to_date):
+                if from_date is not None and ts < from_date:
+                    continue
+                if ts >= to_date:
                     continue
 
                 programmatic = "yes" if entry.get("programmatic") else "no"
@@ -228,7 +231,10 @@ def retag(root, from_date, to_date, tag_filters, add_tags, remove_tags):
                     lines.append(line)
                     continue
 
-                if from_date is not None and not (from_date <= ts < to_date):
+                if from_date is not None and ts < from_date:
+                    lines.append(line)
+                    continue
+                if ts >= to_date:
                     lines.append(line)
                     continue
 
@@ -260,7 +266,7 @@ def retag(root, from_date, to_date, tag_filters, add_tags, remove_tags):
                     lines.append(line)
                     continue
 
-                if entry_tags or had_tags:
+                if entry_tags:
                     entry["tags"] = entry_tags
                 elif "tags" in entry:
                     del entry["tags"]
