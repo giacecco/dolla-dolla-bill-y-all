@@ -178,9 +178,7 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
                 if from_date is not None and not (from_date <= ts < to_date):
                     continue
 
-                model = entry.get("model", "unknown")
                 programmatic = "yes" if entry.get("programmatic") else "no"
-                billing_mode = entry.get("billing_mode")
                 entry_tags = entry.get("tags")
                 if isinstance(entry_tags, list):
                     entry_tags = sorted(entry_tags, key=str.lower)
@@ -193,9 +191,7 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
                     continue
                 usage.append({
                     "project": project,
-                    "model": model,
                     "programmatic": programmatic,
-                    "billing_mode": billing_mode,
                     "tags": entry_tags,
                     "input_tokens": entry.get("input_tokens", 0),
                     "output_tokens": entry.get("output_tokens", 0),
@@ -283,7 +279,7 @@ def retag(root, from_date, to_date, tag_filters, add_tags, remove_tags):
 
 
 def aggregate(entries):
-    key = lambda e: (e["project"], e["model"], e["programmatic"], e["billing_mode"], tuple(e["tags"]))
+    key = lambda e: (e["project"], e["programmatic"], tuple(e["tags"]))
     groups = defaultdict(lambda: {"input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_create": 0, "requests": 0})
 
     for e in entries:
@@ -296,12 +292,10 @@ def aggregate(entries):
         g["requests"] += e["requests"]
 
     result = []
-    for (project, model, programmatic, billing_mode, tags_tuple), g in sorted(groups.items()):
+    for (project, programmatic, tags_tuple), g in sorted(groups.items()):
         result.append({
             "project": project,
-            "model": model,
             "programmatic": programmatic,
-            "billing_mode": billing_mode,
             "tags": list(tags_tuple),
             **g,
         })
@@ -327,13 +321,10 @@ def _col_widths(rows):
         return max(len(header), max((len(v) for v in values), default=0))
 
     show_tags = any(r.get("tags") for r in rows)
-    show_billing = any(r.get("billing_mode") for r in rows)
     _join = lambda t: " | ".join(t) if t else ""
 
     projects = [r["project"] for r in rows] + extra_labels
-    models = [r["model"] for r in rows] + [""]
     programmatic = [r["programmatic"] for r in rows] + [""]
-    billing_modes = [(r.get("billing_mode") or "") for r in rows] + [""]
     all_tags = [_join(r["tags"]) for r in rows] + [""]
     reqs = [fmt(r["requests"]) for r in rows]
     inputs = [fmt(r["input_tokens"]) for r in rows]
@@ -344,12 +335,7 @@ def _col_widths(rows):
 
     cols = [
         ("Project",       lw("Project", projects)),
-        ("Model",         lw("Model", models)),
         ("Programmatic",  lw("Programmatic", programmatic)),
-    ]
-    if show_billing:
-        cols.append(("Billing Mode", lw("Billing Mode", billing_modes)))
-    cols += [
         ("Reqs",          rw("Reqs", reqs)),
         ("Input (base)",  rw("Input (base)", inputs)),
         ("Cache Read",    rw("Cache Read", reads)),
@@ -359,7 +345,7 @@ def _col_widths(rows):
     ]
     if show_tags:
         cols.append(("Tags", lw("Tags", all_tags)))
-    return cols, show_tags, show_billing
+    return cols, show_tags
 
 
 def _build_row(values, cols_by_name):
@@ -391,16 +377,14 @@ def report(rows, from_date, to_date):
         print("No usage data found.")
         return
 
-    cols, show_tags, show_billing = _col_widths(rows)
+    cols, show_tags = _col_widths(rows)
     cols_by_name = {name: (name, width) for name, width in cols}
 
     header_line = "  ".join(f"{label:<{-width}}" if width < 0 else f"{label:>{width}}" for label, width in cols)
     print(header_line)
     print("  ".join("─" * abs(w) for _, w in cols))
 
-    _blank = [("", "Model"), ("", "Programmatic")]
-    if show_billing:
-        _blank.append(("", "Billing Mode"))
+    _blank = [("", "Programmatic")]
 
     last_project = None
     proj_input = proj_output = proj_read = proj_create = proj_reqs = 0
@@ -428,12 +412,7 @@ def report(rows, from_date, to_date):
 
         vals = [
             (r["project"], "Project"),
-            (r["model"], "Model"),
             (r["programmatic"], "Programmatic"),
-        ]
-        if show_billing:
-            vals.append((r.get("billing_mode") or "", "Billing Mode"))
-        vals += [
             (fmt(r["requests"]), "Reqs"),
             (fmt(r["input_tokens"]), "Input (base)"),
             (fmt(r["cache_read"]), "Cache Read"),
@@ -475,11 +454,7 @@ def csv_report(rows):
         return
 
     show_tags = any(r.get("tags") for r in rows)
-    show_billing = any(r.get("billing_mode") for r in rows)
-    headers = ["Project", "Model", "Programmatic"]
-    if show_billing:
-        headers.append("Billing Mode")
-    headers += ["Reqs", "Input (base)", "Cache Read", "Cache Create", "Total Input", "Output Tokens"]
+    headers = ["Project", "Programmatic", "Reqs", "Input (base)", "Cache Read", "Cache Create", "Total Input", "Output Tokens"]
     if show_tags:
         headers.append("Tags")
 
@@ -487,11 +462,8 @@ def csv_report(rows):
     writer.writerow(headers)
     for r in rows:
         total_input = r["input_tokens"] + r["cache_read"] + r["cache_create"]
-        row = [r["project"], r["model"], r["programmatic"]]
-        if show_billing:
-            row.append(r.get("billing_mode") or "")
-        row += [r["requests"], r["input_tokens"], r["cache_read"],
-                r["cache_create"], total_input, r["output_tokens"]]
+        row = [r["project"], r["programmatic"], r["requests"], r["input_tokens"],
+               r["cache_read"], r["cache_create"], total_input, r["output_tokens"]]
         if show_tags:
             row.append(" | ".join(r["tags"]) if r["tags"] else "")
         writer.writerow(row)

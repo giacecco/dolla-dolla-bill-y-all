@@ -62,7 +62,7 @@ export ANTHROPIC_VERTEX_BASE_URL=https://your-llm-gateway.example.com/vertex
 ddbya
 ```
 
-ddbya reads these URLs on startup, overrides them with proxy paths (`/--bedrock`, `/--vertex`, `/--foundry`), and routes each request to the original gateway. Entries are tagged with billing modes `aws_bedrock`, `google_vertex`, or `azure_foundry` respectively.
+ddbya reads these URLs on startup, overrides them with proxy paths (`/--bedrock`, `/--vertex`, `/--foundry`), and routes each request to the original gateway.
 
 **Limitation:** native-SDK backends (e.g. `CLAUDE_CODE_USE_BEDROCK=1` without a gateway URL) route through Claude Code's internal SDK and do not reach the proxy. ddbya cannot intercept those requests without a format-translation layer.
 
@@ -71,7 +71,7 @@ ddbya reads these URLs on startup, overrides them with proxy paths (`/--bedrock`
 Every API call appends a line to `.ddbya.d/usage-<identity>.ddbya` in the current working directory, where `<identity>` is derived from `git config user.email` (or `$USER` as fallback). Each contributor writes to their own file, so parallel work and PR merges never conflict:
 
 ```json
-{"input_tokens": 354, "cache_read_input_tokens": 27123, "model": "claude-opus-4-7", "output_tokens": 42, "stream": true, "timestamp": "2026-05-13T14:30:00Z"}
+{"input_tokens": 354, "cache_read_input_tokens": 27123, "output_tokens": 42, "stream": true, "timestamp": "2026-05-13T14:30:00Z"}
 ```
 
 `cache_read_input_tokens` and `cache_creation_input_tokens` fields appear when prompt caching is in use (Anthropic API). DeepSeek has no caching, so its `input_tokens` counts everything.
@@ -79,8 +79,6 @@ Every API call appends a line to `.ddbya.d/usage-<identity>.ddbya` in the curren
 When `-t`/`--tag` is used, entries include a `"tags"` list. Tags let you associate consumption with a purpose (e.g. a PR review, a client project, an experiment) independently of the folder the session ran in.
 
 When Claude Code is invoked with `-p`/`--print` (non-interactive mode), entries include `"programmatic": true`.
-
-**Subscription "extra usage" is tracked.** When a subscription plan exhausts its included session or weekly allowance and tips into extra usage (billed at standard pay-per-use rates), ddbya detects the transition from the `rate_limit_event` SSE event that Anthropic includes in every streaming response (specifically `rate_limit_info.isUsingOverage`). Affected entries are logged with `billing_mode: "anthropic_subscription_overage"`. This detection applies to streaming responses, which is what Claude Code uses in practice; non-streaming subscription requests are always logged as `"anthropic_subscription"` regardless of overage state.
 
 Timestamps are ISO 8601 UTC — parseable natively by `datetime.fromisoformat()` (Python), `new Date()` (JavaScript), `time.Parse(time.RFC3339, …)` (Go), etc.
 
@@ -103,7 +101,7 @@ Session token usage:
 ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]
 ```
 
-If the given folder directly contains a `.ddbya.d/` with usage files, it reports on that project only. Otherwise it recursively scans all subdirectories for `.ddbya.d/usage-*.ddbya` files. Legacy `.token-usage.ddbya` files (not yet migrated) are also read as a fallback. Groups usage by top-level subfolder, model, programmatic flag, and tags. Includes all data by default — pass `--last`, `--from`, or `--to` to filter by date. `--from` and `--to` can be used together or individually; `--from` without `--to` means "from that date to now". `--last` is mutually exclusive with `--from`/`--to`. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. `--json` outputs compact JSON to stdout instead of the table. `--csv` outputs CSV with a header row. Each row's `tags` is an array of strings in JSON, or a pipe-joined string in CSV. `--json` and `--csv` are mutually exclusive. Zero dependencies — Python 3 standard library only.
+If the given folder directly contains a `.ddbya.d/` with usage files, it reports on that project only. Otherwise it recursively scans all subdirectories for `.ddbya.d/usage-*.ddbya` files. Legacy `.token-usage.ddbya` files (not yet migrated) are also read as a fallback. Groups usage by top-level subfolder, programmatic flag, and tags. Includes all data by default — pass `--last`, `--from`, or `--to` to filter by date. `--from` and `--to` can be used together or individually; `--from` without `--to` means "from that date to now". `--last` is mutually exclusive with `--from`/`--to`. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. `--json` outputs compact JSON to stdout instead of the table. `--csv` outputs CSV with a header row. Each row's `tags` is an array of strings in JSON, or a pipe-joined string in CSV. `--json` and `--csv` are mutually exclusive. Zero dependencies — Python 3 standard library only.
 
 Example — last 7 days of consumption for this project:
 
@@ -114,21 +112,14 @@ ddbya-report . --last 7
 ```
 Token Usage Report — 2026-05-08 to 2026-05-14
 
-Project                 Model                      Programmatic  Reqs  Input (base)  Cache Read  Cache Create  Total Input  Output Tokens  Tags
-──────────────────────  ─────────────────────────  ────────────  ────  ────────────  ──────────  ────────────  ───────────  ─────────────  ────────────────────────────────────────────────────
-dolla-dolla-bill-y-all  claude-haiku-4-5-20251001  no              63        24,008      67,861        29,128      120,997          2,002
-dolla-dolla-bill-y-all  claude-haiku-4-5-20251001  no               4           702           -             -          702             28  code review | ddbya core dev
-dolla-dolla-bill-y-all  claude-haiku-4-5-20251001  no               2           347           -             -          347             11  code review | ddbya core dev | Steve's tags request
-dolla-dolla-bill-y-all  claude-opus-4-7            no             223        12,947  15,505,366       548,058   16,066,371        103,323
-dolla-dolla-bill-y-all  claude-opus-4-7            no              82         6,302   7,557,402       204,112    7,767,816         38,860  code review | ddbya core dev
-dolla-dolla-bill-y-all  claude-opus-4-7            no              10         1,043     509,891        70,391      581,325          7,025  code review | ddbya core dev | Steve's tags request
-dolla-dolla-bill-y-all  claude-sonnet-4-6          no             104         4,740   5,683,220       409,030    6,096,990         28,113
-dolla-dolla-bill-y-all  deepseek-v4-pro            no             247    14,400,948           -             -   14,400,948        115,927
-dolla-dolla-bill-y-all  deepseek-v4-pro            no             181     7,945,181           -             -    7,945,181         51,676  code writing | ddbya core dev
-dolla-dolla-bill-y-all  deepseek-v4-pro            no             114     7,256,808           -             -    7,256,808         29,236  code writing | ddbya core dev | Steve's tags request
-(subtotal)                                                       1,030    29,653,026  29,323,740     1,260,719   60,237,485        376,201
+Project                 Programmatic  Reqs  Input (base)  Cache Read  Cache Create  Total Input  Output Tokens  Tags
+──────────────────────  ────────────  ────  ────────────  ──────────  ────────────  ───────────  ─────────────  ────────────────────────────────────────────────────
+dolla-dolla-bill-y-all  no             382        29,237  28,813,849     1,260,719   30,103,805        283,038
+dolla-dolla-bill-y-all  no             277        15,247     509,891        70,391      595,529         97,661  code review | ddbya core dev
+dolla-dolla-bill-y-all  no             371        14,542           -             -       14,542         80,502  code writing | ddbya core dev
+(subtotal)                           1,030        29,026  29,323,740     1,260,719   59,613,485        461,201
 
-TOTAL                                                            1,030    29,653,026  29,323,740     1,260,719   60,237,485        376,201
+TOTAL                                1,030        29,026  29,323,740     1,260,719   59,613,485        461,201
 ```
 
 ## Shell autocompletion
@@ -167,9 +158,9 @@ ddbya
   │   and (if backends found) ANTHROPIC_BEDROCK_BASE_URL=http://127.0.0.1:<port>/--bedrock etc.
   ├─ runs claude (all args forwarded)
   ├─ proxy relays each request to the real upstream
-  │   ├─ path prefix /--bedrock → AWS Bedrock gateway (billing_mode: aws_bedrock)
-  │   ├─ path prefix /--vertex  → Vertex AI gateway (billing_mode: google_vertex)
-  │   ├─ path prefix /--foundry → Azure Foundry gateway (billing_mode: azure_foundry)
+  │   ├─ path prefix /--bedrock → AWS Bedrock gateway
+  │   ├─ path prefix /--vertex  → Vertex AI gateway
+  │   ├─ path prefix /--foundry → Azure Foundry gateway
   │   └─ parses usage from streaming (SSE) and non-streaming responses
   └─ on exit: prints summary, exits with claude's return code
 ```
