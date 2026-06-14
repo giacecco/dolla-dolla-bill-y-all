@@ -112,12 +112,16 @@ def resolve_window(params):
     if params["to"]:
         to_date = datetime.strptime(params["to"], "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
     else:
-        to_date = now
+        to_date = None
 
     if params["from"]:
         from_date = datetime.strptime(params["from"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        if to_date is None:
+            to_date = now
     elif params["last"] is not None:
         from_date = now - timedelta(days=params["last"])
+        if to_date is None:
+            to_date = now
     else:
         from_date = None
 
@@ -178,7 +182,7 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
                     continue
                 if from_date is not None and ts < from_date:
                     continue
-                if ts >= to_date:
+                if to_date is not None and ts >= to_date:
                     continue
 
                 entry_tags = entry.get("tags")
@@ -233,16 +237,12 @@ def retag(root, from_date, to_date, tag_filters, add_tags, remove_tags):
                 if from_date is not None and ts < from_date:
                     lines.append(line)
                     continue
-                if ts >= to_date:
+                if to_date is not None and ts >= to_date:
                     lines.append(line)
                     continue
 
                 entry_tags = entry.get("tags")
-                had_tags = isinstance(entry_tags, list)
-                if had_tags:
-                    entry_tags = sorted(entry_tags, key=str.lower)
-                else:
-                    entry_tags = []
+                entry_tags = sorted(entry_tags, key=str.lower) if isinstance(entry_tags, list) else []
 
                 if tag_filters and not all(
                     any(_match_tag(pat, tag) for tag in entry_tags)

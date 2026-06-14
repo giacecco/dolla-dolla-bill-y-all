@@ -80,26 +80,25 @@ def _collect_tags_from_dir(root_dir):
     """Recursively collect tags from all usage-*.ddbya and legacy .token-usage.ddbya files under root_dir."""
     tags = set()
     root = Path(root_dir)
-    log_files = list(root.rglob(f"{DDBYA_DIR}/{USAGE_GLOB}"))
-    log_files += [p for p in root.rglob(".token-usage.ddbya")]
-    for log_file in log_files:
-        try:
-            with open(log_file, encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    entry_tags = entry.get("tags", [])
-                    if isinstance(entry_tags, list):
-                        for t in entry_tags:
-                            if isinstance(t, str):
-                                tags.add(t)
-        except OSError:
-            pass
+    for pattern in (f"{DDBYA_DIR}/{USAGE_GLOB}", ".token-usage.ddbya"):
+        for log_file in root.rglob(pattern):
+            try:
+                with open(log_file, encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        entry_tags = entry.get("tags", [])
+                        if isinstance(entry_tags, list):
+                            for t in entry_tags:
+                                if isinstance(t, str):
+                                    tags.add(t)
+            except OSError:
+                pass
     return tags
 
 
@@ -431,7 +430,11 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
 
         if pending_chunks:
             pending = b"".join(pending_chunks)
-            process_line(pending.decode("utf-8", errors="replace").rstrip("\r"))
+            while b"\n" in pending:
+                raw_line, pending = pending.split(b"\n", 1)
+                process_line(raw_line.decode("utf-8", errors="replace").rstrip("\r"))
+            if pending:
+                process_line(pending.decode("utf-8", errors="replace").rstrip("\r"))
 
         if best_input > 0 or best_output > 0:
             self._log_token_usage(
