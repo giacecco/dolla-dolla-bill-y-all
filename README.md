@@ -131,14 +131,14 @@ ddbya-report . --last 7
 ```
 Token Usage Report — 2026-05-08 to 2026-05-14
 
-Project                 Reqs  Input (base)  Cache Read  Cache Create  Total Input  Output Tokens  Tags
-──────────────────────  ────  ────────────  ──────────  ────────────  ───────────  ─────────────  ────────────────────────────────────────────────────
-dolla-dolla-bill-y-all   382        29,237  28,813,849     1,260,719   30,103,805        283,038
-dolla-dolla-bill-y-all   277        15,247     509,891        70,391      595,529         97,661  code review | ddbya core dev
-dolla-dolla-bill-y-all   371        14,542           -             -       14,542         80,502  code writing | ddbya core dev
-(subtotal)             1,030        29,026  29,323,740     1,260,719   59,613,485        461,201
+Project                 Model              Reqs  Input (base)  Cache Read  Cache Create  Total Input  Output Tokens  Tags
+──────────────────────  ─────────────────  ────  ────────────  ──────────  ────────────  ───────────  ─────────────  ────────────────────────────────────────────────────
+dolla-dolla-bill-y-all  claude-sonnet-4-6   382        29,237  28,813,849     1,260,719   30,103,805        283,038
+dolla-dolla-bill-y-all  claude-sonnet-4-6   277        15,247     509,891        70,391      595,529         97,661  code review | ddbya core dev
+dolla-dolla-bill-y-all  claude-sonnet-4-6   371        14,542           -             -       14,542         80,502  code writing | ddbya core dev
+(subtotal)                                1,030        29,026  29,323,740     1,260,719   59,613,485        461,201
 
-TOTAL                                1,030        29,026  29,323,740     1,260,719   59,613,485        461,201
+TOTAL                                     1,030        29,026  29,323,740     1,260,719   59,613,485        461,201
 ```
 
 ## Shell autocompletion

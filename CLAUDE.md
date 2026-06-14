@@ -18,11 +18,11 @@ A zero-dependency Python 3 reverse proxy that wraps Claude Code to intercept and
 
 ## Token extraction
 
-- Non-streaming: reads full response JSON, decompresses if gzipped, extracts `usage.input_tokens`, `usage.output_tokens`, `usage.cache_read_input_tokens`, `usage.cache_creation_input_tokens`.
-- Streaming (SSE): incrementally decompresses gzip and parses events line-by-line as chunks arrive (no full-body buffer). Scans `message_start` (Anthropic input + cache fields at `message.usage.*`), `message_delta` (output tokens), and `message_stop` (fallback).
+- Non-streaming: reads full response JSON, decompresses if gzipped, extracts `usage.input_tokens`, `usage.output_tokens`, `usage.cache_read_input_tokens`, `usage.cache_creation_input_tokens`, and `model`.
+- Streaming (SSE): incrementally decompresses gzip and parses events line-by-line as chunks arrive (no full-body buffer). Scans `message_start` (Anthropic input + cache fields at `message.usage.*`, model at `message.model`), `message_delta` (output tokens), and `message_stop` (fallback for tokens and model). Model is taken from the response, not the request, so aliased model names resolve to their actual deployed model.
 - A `"tags"` list is written into every entry when `-t`/`--tag` is given at launch (can be given multiple times). Tags associate consumption with a purpose independently of the project folder.
 - Anthropic's `usage.input_tokens` is the **non-cache** base input count — it does NOT include cache tokens. Total input = `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`. Source: [Anthropic SDK `Message.usage` docstring](https://raw.githubusercontent.com/anthropics/anthropic-sdk-python/main/src/anthropic/types/message.py) ("Total input tokens in a request is the summation of `input_tokens`, `cache_creation_input_tokens`, and `cache_read_input_tokens`").
-- Cache fields appear in the log only when non-zero.
+- Cache fields appear in the log only when non-zero. `model` is omitted if empty (e.g. non-inference endpoints).
 - Timestamps are ISO 8601 UTC.
 
 ## No dependencies
@@ -56,7 +56,7 @@ ddbya-report /path/to/projects [--last N | --today] [--from YYYY-MM-DD] [--to YY
 - If the given folder directly contains a `.ddbya.d/` with usage files, reports on that project only. Otherwise scans subdirectories recursively for `.ddbya.d/usage-*.ddbya` files.
 - Legacy `.token-usage.ddbya` files (not yet migrated) are also read as a fallback.
 - Project name = top-level subfolder under the given root that contains the `.ddbya.d/` directory (first path component after root). If the directory is directly in root, uses root's directory name.
-- Aggregates by project and tags (across all per-user files in the same project). A Tags column appears whenever any entry has tags.
+- Aggregates by project, model, and tags (across all per-user files in the same project). A Model column appears whenever any entry has a model field; a Tags column appears whenever any entry has tags.
 - Includes all data by default. Pass `--last`, `--from`, `--to`, or `--today` to filter by date. `--today` is shorthand for `--from <today> --to <today>` and is mutually exclusive with `--last`, `--from`, and `--to`.
 - `--from`/`--to` can be used together or individually; `--from` without `--to` means "from that date to now".
 - `-t`/`--tag` filters to entries containing that tag. Can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. Example: `ddbya-report . -t /^Steve/ -t "code review"` matches entries whose tags include one starting with "Steve" AND one exactly "code review".
