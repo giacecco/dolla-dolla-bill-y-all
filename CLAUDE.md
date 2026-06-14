@@ -2,20 +2,20 @@
 
 ## Project
 
-A zero-dependency Python 3 reverse proxy that wraps Claude Code to intercept and log API token usage across Anthropic, DeepSeek, and cloud-provider backends. Single file: `ddbya`. Reporting script: `ddbya-report`.
+A zero-dependency Python 3 reverse proxy that wraps Claude Code to intercept and log API token usage across Anthropic and cloud-provider backends. Single file: `ddbya`. Reporting script: `ddbya-report`.
 
 ## Architecture
 
 - `TokenLogger` — thread-safe JSONL writer with in-memory session tracking. Writes to `.ddbya.d/usage-<identity>-<session>.ddbya` (see Identity & layout).
 - `ReverseProxyHandler` — `http.server.BaseHTTPRequestHandler` subclass. Forwards any HTTP method to the upstream, relays streaming (SSE) and non-streaming responses chunk-by-chunk, and extracts `usage` from the response. Implements path-prefix routing: when `extra_upstreams` is non-empty, a matching prefix (e.g. `/--bedrock`) is stripped and the request is forwarded to the corresponding cloud-provider upstream.
-- `ReverseProxy` — manages the `ThreadingHTTPServer` lifecycle. Binds to port 0 for auto-selection, passes upstream scheme/netloc/base-path, tags, programmatic flag, `log_path`, and `extra_upstreams` to the handler via class attributes. The upstream URL's path component is preserved as `upstream_base_path` and prepended to every forwarded request that does not match an `extra_upstreams` prefix — required for DeepSeek (`https://api.deepseek.com/anthropic`) and any enterprise gateway whose Anthropic-compatible endpoint lives under a non-root path.
-- `parse_args()` — extracts `--deepseek`, `-t`/`--tag`, and `--list-tags` from argv. Returns `(deepseek, tags, list_tags, claude_args)`. `-t`/`--tag` can be given multiple times.
+- `ReverseProxy` — manages the `ThreadingHTTPServer` lifecycle. Binds to port 0 for auto-selection, passes upstream scheme/netloc/base-path, tags, programmatic flag, `log_path`, and `extra_upstreams` to the handler via class attributes. The upstream URL's path component is preserved as `upstream_base_path` and prepended to every forwarded request that does not match an `extra_upstreams` prefix — required for any enterprise gateway whose Anthropic-compatible endpoint lives under a non-root path.
+- `parse_args()` — extracts `-t`/`--tag` and `--list-tags` from argv. Merges `DDBYA_TAGS` env var (comma-separated) with `-t` flags. Returns `(tags, list_tags, claude_args)`. `-t`/`--tag` can be given multiple times.
 - `collect_tags()` — scans `.ddbya.d/usage-*.ddbya` in the current project and sibling directories, returning all unique tags found. Used by `--list-tags` for shell tab completion of `-t`/`--tag` values.
 - `_sanitise_identity(s)` — lowercases s and collapses runs of non-`[a-z0-9._-]` chars to a single `-`. Returns `"anonymous"` if the result is empty.
 - `_resolve_identity()` — determines the per-user identity string used in log filenames. Resolution order: `git config user.email` → `$USER` → UUID stored in `~/.config/ddbya/id` (generated on first call if absent).
 - `_migrate_legacy_layout(project_dir, identity)` — idempotent startup migration. Moves `.token-usage.ddbya` → `.ddbya.d/usage-<identity>-<session>.ddbya` if the legacy file exists at the project root. Prints one line to stderr if moved.
 - `_build_extra_upstreams()` — reads `ANTHROPIC_BEDROCK_BASE_URL` (or `ANTHROPIC_AWS_BASE_URL`), `ANTHROPIC_VERTEX_BASE_URL`, and `ANTHROPIC_FOUNDRY_BASE_URL` from the environment before they are overridden. Returns a path-prefix → `{scheme, netloc, base_path}` dict consumed by `ReverseProxy`. Only backends whose `*_BASE_URL` env var is already set (indicating the user has an LLM gateway configured) are included. Native-SDK backends (`CLAUDE_CODE_USE_BEDROCK` without a gateway URL) cannot be intercepted without a format-translation layer.
-- `main()` — parses args, resolves identity and calls `_migrate_legacy_layout`, detects `-p`/`--print` for programmatic tagging, configures upstream (DeepSeek if `--deepseek` set, otherwise `ANTHROPIC_BASE_URL` or default), calls `_build_extra_upstreams()` to snapshot pre-existing cloud-provider gateway URLs, starts proxy. If `--list-tags` is given, prints collected tags and exits. Sets `ANTHROPIC_BASE_URL` and (for each detected backend) `ANTHROPIC_BEDROCK_BASE_URL` / `ANTHROPIC_VERTEX_BASE_URL` / `ANTHROPIC_FOUNDRY_BASE_URL` to path-prefixed proxy URLs so all configured backends route through the proxy. For `--deepseek`, maps every `DEEPSEEK_*` env var (except `DEEPSEEK_BASE_URL`) to its `ANTHROPIC_*` equivalent and sets `CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4-flash` and `CLAUDE_CODE_EFFORT_LEVEL=max`. Runs `claude` via `subprocess.Popen` with inherited stdio. Prints session summary to stderr on exit.
+- `main()` — parses args, resolves identity and calls `_migrate_legacy_layout`, detects `-p`/`--print` for programmatic tagging, configures upstream from `ANTHROPIC_BASE_URL` (or default), calls `_build_extra_upstreams()` to snapshot pre-existing cloud-provider gateway URLs, starts proxy. If `--list-tags` is given, prints collected tags and exits. Sets `ANTHROPIC_BASE_URL` and (for each detected backend) `ANTHROPIC_BEDROCK_BASE_URL` / `ANTHROPIC_VERTEX_BASE_URL` / `ANTHROPIC_FOUNDRY_BASE_URL` to path-prefixed proxy URLs so all configured backends route through the proxy. Runs `claude` via `subprocess.Popen` with inherited stdio. Prints session summary to stderr on exit.
 
 ## Token extraction
 
@@ -71,7 +71,7 @@ ddbya-report /path/to/projects [--last N | --today] [--from YYYY-MM-DD] [--to YY
 
 ## Maintenance
 
-- When a new Claude Code version is released, verify that none of ddbya's own short flags (`-t`, `-p`) or long flags (`--deepseek`, `--tag`, `--list-tags`) conflict with new flags introduced by Claude Code itself. A conflict would shadow or consume a flag meant for the wrapped `claude` process.
+- When a new Claude Code version is released, verify that none of ddbya's own short flags (`-t`, `-p`) or long flags (`--tag`, `--list-tags`) conflict with new flags introduced by Claude Code itself. A conflict would shadow or consume a flag meant for the wrapped `claude` process.
 
 ## Conventions
 

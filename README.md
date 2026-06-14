@@ -26,7 +26,7 @@ ddbya -t "reviewing PR #123"
 ddbya -t "client-acme" -t "urgent"   # multiple tags per session
 ```
 
-The wrapper respects your existing `ANTHROPIC_BASE_URL`. With `--deepseek`, the upstream is set to `DEEPSEEK_BASE_URL` (or the default DeepSeek endpoint) and every `DEEPSEEK_*` env var is mapped to its `ANTHROPIC_*` equivalent.
+The wrapper respects your existing `ANTHROPIC_BASE_URL`.
 
 ### Directory layout
 
@@ -113,7 +113,7 @@ Every API call appends a line to `.ddbya.d/usage-<identity>.ddbya` in the curren
 {"input_tokens": 354, "cache_read_input_tokens": 27123, "output_tokens": 42, "stream": true, "timestamp": "2026-05-13T14:30:00Z"}
 ```
 
-`cache_read_input_tokens` and `cache_creation_input_tokens` fields appear when prompt caching is in use (Anthropic API). DeepSeek has no caching, so its `input_tokens` counts everything.
+`cache_read_input_tokens` and `cache_creation_input_tokens` fields appear when prompt caching is active.
 
 When `-t`/`--tag` is used, entries include a `"tags"` list. Tags let you associate consumption with a purpose (e.g. a PR review, a client project, an experiment) independently of the folder the session ran in.
 
@@ -204,7 +204,7 @@ ddbya
   └─ on exit: prints summary, exits with claude's return code
 ```
 
-Token extraction handles the Anthropic API (`message_start` for input tokens, `message_delta` for output tokens) and DeepSeek's Anthropic-compatible streaming format. Gzip-encoded responses are decompressed transparently.
+Token extraction handles the Anthropic streaming format (`message_start` for input tokens, `message_delta` for output tokens). Gzip-encoded responses are decompressed transparently.
 
 ## Disclaimer
 

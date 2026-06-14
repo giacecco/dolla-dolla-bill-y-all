@@ -5,15 +5,9 @@ Zero dependencies — Python 3 standard library only.
 
 Usage:
     ddbya [claude args...]
-    ddbya --deepseek [claude args...]
     ddbya -t <tag> [claude args...]
 
 Options:
-    --deepseek                  Route through DeepSeek's Anthropic-compatible
-                                endpoint. Maps every DEEPSEEK_* env var to its
-                                ANTHROPIC_* equivalent. Defaults upstream to
-                                https://api.deepseek.com/anthropic (overridable
-                                via DEEPSEEK_BASE_URL env var).
     -t, --tag <tag>            Tag to label this session's consumption. Can be
                                 given multiple times. Tags are written into
                                 each .ddbya.d/usage-<identity>-<session>.ddbya entry.
@@ -43,12 +37,8 @@ DDBYA_DIR = ".ddbya.d"
 USAGE_FILENAME_PREFIX = "usage-"
 USAGE_GLOB = "usage-*.ddbya"
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
-DEEPSEEK_DEFAULT_UPSTREAM = "https://api.deepseek.com/anthropic"
-
-
 def parse_args(argv):
-    """Extract wrapper-specific flags, return (deepseek, tags, list_tags, remaining_args_for_claude)."""
-    deepseek = False
+    """Extract wrapper-specific flags, return (tags, list_tags, remaining_args_for_claude)."""
     tags = []
     list_tags = False
     claude_args = []
@@ -66,15 +56,11 @@ def parse_args(argv):
             list_tags = True
             i += 1
             continue
-        elif arg == "--deepseek":
-            deepseek = True
-            i += 1
-            continue
         claude_args.append(arg)
         i += 1
 
     env_tags = [t.strip() for t in os.environ.get("DDBYA_TAGS", "").split(",") if t.strip()]
-    return deepseek, env_tags + tags, list_tags, claude_args
+    return env_tags + tags, list_tags, claude_args
 
 
 def _find_tag_root(start_dir):
@@ -603,17 +589,14 @@ def _build_extra_upstreams():
 
 
 def main():
-    deepseek, tags, list_tags, claude_args = parse_args(sys.argv[1:])
+    tags, list_tags, claude_args = parse_args(sys.argv[1:])
 
     if list_tags:
         for tag in collect_tags(Path.cwd()):
             print(tag)
         sys.exit(0)
 
-    if deepseek:
-        upstream = os.environ.get("DEEPSEEK_BASE_URL", DEEPSEEK_DEFAULT_UPSTREAM)
-    else:
-        upstream = os.environ.get("ANTHROPIC_BASE_URL", DEFAULT_UPSTREAM)
+    upstream = os.environ.get("ANTHROPIC_BASE_URL", DEFAULT_UPSTREAM)
 
     programmatic = is_programmatic_invocation(claude_args)
 
@@ -627,7 +610,7 @@ def main():
     # We only intercept backends that already have a gateway URL configured;
     # native-SDK backends (e.g. CLAUDE_CODE_USE_BEDROCK without a gateway URL)
     # cannot be intercepted without a format-translation layer.
-    extra_upstreams = _build_extra_upstreams() if not deepseek else {}
+    extra_upstreams = _build_extra_upstreams()
 
     log_path = Path.cwd() / DDBYA_DIR / f"{USAGE_FILENAME_PREFIX}{identity}-{session_id}.ddbya"
     proxy = ReverseProxy(upstream, log_path, programmatic=programmatic, tags=tags,
@@ -647,12 +630,6 @@ def main():
         env["ANTHROPIC_VERTEX_BASE_URL"] = f"{proxy_base}/--vertex"
     if "/--foundry" in extra_upstreams:
         env["ANTHROPIC_FOUNDRY_BASE_URL"] = f"{proxy_base}/--foundry"
-    if deepseek:
-        for key, value in os.environ.items():
-            if key.startswith("DEEPSEEK_") and key != "DEEPSEEK_BASE_URL":
-                env["ANTHROPIC_" + key[len("DEEPSEEK_"):]] = value
-        env["CLAUDE_CODE_SUBAGENT_MODEL"] = "deepseek-v4-flash"
-        env["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
 
     # Restore default SIGINT behaviour so Ctrl+C is forwarded to claude naturally.
     # Python installs its own SIGINT handler that raises KeyboardInterrupt;
