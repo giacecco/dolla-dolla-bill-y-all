@@ -73,6 +73,20 @@ export CLAUDE_CONFIG_DIR=~/.config/claude-personal
 
 direnv walks up the directory tree, so a `.envrc` at `clients/client-acme/` is picked up when you `cd` directly into any subdirectory of it. The folder structure then provides natural consumption attribution in `ddbya-report` with no manual tagging required.
 
+You can also set default tags via `DDBYA_TAGS` (comma-separated) so every session in that project is tagged automatically without passing `-t` each time:
+
+```sh
+# clients/client-acme/.envrc
+export ANTHROPIC_API_KEY=sk-ant-...acme
+export DDBYA_TAGS=client-acme
+```
+
+Tags passed with `-t` at the command line are appended to `DDBYA_TAGS`, so you can still add session-specific tags on top:
+
+```sh
+ddbya -t "code review"   # session tagged: client-acme, code review
+```
+
 ## Cloud-provider backends
 
 ddbya can intercept traffic to AWS Bedrock, Google Vertex AI, and Microsoft Azure Foundry when you have an LLM gateway already configured. Set the relevant base URL env var **before** launching ddbya:
