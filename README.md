@@ -18,7 +18,6 @@ Requires Python 3. No pip packages needed — standard library only.
 
 ```sh
 ddbya                        # interactive session, uses env ANTHROPIC_BASE_URL
-ddbya -p "explain this PR"   # one-shot, prints token summary to stderr
 ddbya --model sonnet         # any claude flags are forwarded
 
 # Tags -- label consumption for cross-project tracking
@@ -117,7 +116,6 @@ Every API call appends a line to `.ddbya.d/usage-<identity>.ddbya` in the curren
 
 When `-t`/`--tag` is used, entries include a `"tags"` list. Tags let you associate consumption with a purpose (e.g. a PR review, a client project, an experiment) independently of the folder the session ran in.
 
-When Claude Code is invoked with `-p`/`--print` (non-interactive mode), entries include `"programmatic": true`.
 
 Timestamps are ISO 8601 UTC — parseable natively by `datetime.fromisoformat()` (Python), `new Date()` (JavaScript), `time.Parse(time.RFC3339, …)` (Go), etc.
 
@@ -140,7 +138,7 @@ Session token usage:
 ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]
 ```
 
-If the given folder directly contains a `.ddbya.d/` with usage files, it reports on that project only. Otherwise it recursively scans all subdirectories for `.ddbya.d/usage-*.ddbya` files. Legacy `.token-usage.ddbya` files (not yet migrated) are also read as a fallback. Groups usage by top-level subfolder, programmatic flag, and tags. Includes all data by default — pass `--last`, `--from`, or `--to` to filter by date. `--from` and `--to` can be used together or individually; `--from` without `--to` means "from that date to now". `--last` is mutually exclusive with `--from`/`--to`. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. `--json` outputs compact JSON to stdout instead of the table. `--csv` outputs CSV with a header row. Each row's `tags` is an array of strings in JSON, or a pipe-joined string in CSV. `--json` and `--csv` are mutually exclusive. Zero dependencies — Python 3 standard library only.
+If the given folder directly contains a `.ddbya.d/` with usage files, it reports on that project only. Otherwise it recursively scans all subdirectories for `.ddbya.d/usage-*.ddbya` files. Legacy `.token-usage.ddbya` files (not yet migrated) are also read as a fallback. Groups usage by top-level subfolder and tags. Includes all data by default — pass `--last`, `--from`, or `--to` to filter by date. `--from` and `--to` can be used together or individually; `--from` without `--to` means "from that date to now". `--last` is mutually exclusive with `--from`/`--to`. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. `--json` outputs compact JSON to stdout instead of the table. `--csv` outputs CSV with a header row. Each row's `tags` is an array of strings in JSON, or a pipe-joined string in CSV. `--json` and `--csv` are mutually exclusive. Zero dependencies — Python 3 standard library only.
 
 Example — last 7 days of consumption for this project:
 

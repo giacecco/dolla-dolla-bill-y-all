@@ -171,11 +171,6 @@ def _migrate_legacy_layout(project_dir, identity, session_id):
         print(f"ddbya: migrated {legacy_usage.name} → {ddbya_dir.name}/{target.name}", file=sys.stderr)
 
 
-def is_programmatic_invocation(claude_args):
-    """True if -p/--print appears in the argument list."""
-    return any(arg in ("-p", "--print") for arg in claude_args)
-
-
 class TokenLogger:
     """Writes token usage to a project-local JSONL file and tracks session totals."""
 
@@ -219,7 +214,6 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
     upstream_netloc = "api.anthropic.com"
     upstream_base_path = ""
     token_logger = None
-    programmatic = False
     tags = None
     # path_prefix → {scheme, netloc, base_path} for cloud-provider backends
     extra_upstreams = None
@@ -235,8 +229,6 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
         }
-        if self.programmatic:
-            entry["programmatic"] = True
         if self.tags:
             entry["tags"] = list(self.tags)
         if cache_read:
@@ -487,8 +479,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
 class ReverseProxy:
     """Manages the lifecycle of the reverse proxy HTTP server."""
 
-    def __init__(self, upstream_url, log_path, programmatic=False, tags=None,
-                 extra_upstreams=None):
+    def __init__(self, upstream_url, log_path, tags=None, extra_upstreams=None):
         parsed = urllib.parse.urlparse(upstream_url)
         if parsed.scheme and parsed.netloc:
             self.upstream_scheme = parsed.scheme
@@ -500,7 +491,6 @@ class ReverseProxy:
             self.upstream_netloc = default.netloc
             self.upstream_base_path = default.path.rstrip("/")
 
-        self.programmatic = programmatic
         self.tags = tags or []
         # path_prefix → {scheme, netloc, base_path} for cloud-provider backends
         # (Bedrock, Vertex AI, Azure Foundry). Built in main() from existing
@@ -538,7 +528,6 @@ class ReverseProxy:
         BoundHandler.upstream_scheme = proxy.upstream_scheme
         BoundHandler.upstream_netloc = proxy.upstream_netloc
         BoundHandler.upstream_base_path = proxy.upstream_base_path
-        BoundHandler.programmatic = proxy.programmatic
         BoundHandler.tags = proxy.tags
         BoundHandler.extra_upstreams = proxy.extra_upstreams
         return BoundHandler
@@ -598,8 +587,6 @@ def main():
 
     upstream = os.environ.get("ANTHROPIC_BASE_URL", DEFAULT_UPSTREAM)
 
-    programmatic = is_programmatic_invocation(claude_args)
-
     # Resolve the per-user identity and migrate any legacy layout before any
     # logging operations so all paths are in the right place.
     identity = _resolve_identity()
@@ -613,7 +600,7 @@ def main():
     extra_upstreams = _build_extra_upstreams()
 
     log_path = Path.cwd() / DDBYA_DIR / f"{USAGE_FILENAME_PREFIX}{identity}-{session_id}.ddbya"
-    proxy = ReverseProxy(upstream, log_path, programmatic=programmatic, tags=tags,
+    proxy = ReverseProxy(upstream, log_path, tags=tags,
                          extra_upstreams=extra_upstreams)
     proxy.start()
 
