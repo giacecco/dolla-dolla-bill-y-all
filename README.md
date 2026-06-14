@@ -86,24 +86,6 @@ Tags passed with `-t` at the command line are appended to `DDBYA_TAGS`, so you c
 ddbya -t "code review"   # session tagged: client-acme, code review
 ```
 
-## Cloud-provider backends
-
-ddbya can intercept traffic to AWS Bedrock, Google Vertex AI, and Microsoft Azure Foundry when you have an LLM gateway already configured. Set the relevant base URL env var **before** launching ddbya:
-
-```sh
-# AWS Bedrock via LiteLLM or similar gateway
-export ANTHROPIC_BEDROCK_BASE_URL=https://your-llm-gateway.example.com/bedrock
-ddbya
-
-# Google Vertex AI via gateway
-export ANTHROPIC_VERTEX_BASE_URL=https://your-llm-gateway.example.com/vertex
-ddbya
-```
-
-ddbya reads these URLs on startup, overrides them with proxy paths (`/--bedrock`, `/--vertex`, `/--foundry`), and routes each request to the original gateway.
-
-**Limitation:** native-SDK backends (e.g. `CLAUDE_CODE_USE_BEDROCK=1` without a gateway URL) route through Claude Code's internal SDK and do not reach the proxy. ddbya cannot intercept those requests without a format-translation layer.
-
 ## Output
 
 Every API call appends a line to `.ddbya.d/usage-<identity>.ddbya` in the current working directory, where `<identity>` is derived from `git config user.email` (or `$USER` as fallback). Each contributor writes to their own file, so parallel work and PR merges never conflict:
@@ -189,15 +171,10 @@ source /path/to/dolla-dolla-bill-y-all/completions/ddbya-report.bash
 
 ```
 ddbya
-  ├─ snapshots any existing ANTHROPIC_BEDROCK/VERTEX/FOUNDRY_BASE_URL
   ├─ starts local reverse proxy on 127.0.0.1:<random-port>
   ├─ sets ANTHROPIC_BASE_URL=http://127.0.0.1:<port>
-  │   and (if backends found) ANTHROPIC_BEDROCK_BASE_URL=http://127.0.0.1:<port>/--bedrock etc.
   ├─ runs claude (all args forwarded)
   ├─ proxy relays each request to the real upstream
-  │   ├─ path prefix /--bedrock → AWS Bedrock gateway
-  │   ├─ path prefix /--vertex  → Vertex AI gateway
-  │   ├─ path prefix /--foundry → Azure Foundry gateway
   │   └─ parses usage from streaming (SSE) and non-streaming responses
   └─ on exit: prints summary, exits with claude's return code
 ```
@@ -205,6 +182,8 @@ ddbya
 Token extraction handles the Anthropic streaming format (`message_start` for input tokens, `message_delta` for output tokens). Gzip-encoded responses are decompressed transparently.
 
 ## Disclaimer
+
+Consumption figures are indicative. ddbya intercepts what it can see — HTTP traffic through its proxy — but billing is determined by each provider's own systems and may include usage that never passes through ddbya (e.g. interactive Claude.ai web sessions, native-SDK calls that bypass the proxy, or provider-side rounding). Treat the numbers as a useful approximation for project attribution and cost awareness, not as an authoritative billing record.
 
 This software has not been thoroughly tested. It is provided in the hope that it will be useful, but without any warranty. Use at your own risk. The authors accept no liability for any consequences arising from its use, including but not limited to incorrect cost tracking, budget enforcement failures, or any other misbehaviour.
 

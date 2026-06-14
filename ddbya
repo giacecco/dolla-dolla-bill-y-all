@@ -215,8 +215,6 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
     upstream_base_path = ""
     token_logger = None
     tags = None
-    # path_prefix → {scheme, netloc, base_path} for cloud-provider backends
-    extra_upstreams = None
 
     # Suppress http.server's default request logging
     def log_message(self, format, *args):
@@ -244,28 +242,13 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         req_body = self.rfile.read(content_length) if content_length else b""
 
-        # Resolve backend and upstream from path prefix. Path prefixes are set
-        # in extra_upstreams by main() for each configured third-party backend
-        # (e.g. /--bedrock for AWS Bedrock). When matched, strip the prefix and
-        # prepend the base path of the original upstream URL.
         parsed_req = urllib.parse.urlparse(self.path)
         req_path = parsed_req.path
         req_query = parsed_req.query
         active_scheme = self.upstream_scheme
         active_netloc = self.upstream_netloc
-        for prefix, info in (self.extra_upstreams or {}).items():
-            if req_path == prefix or req_path.startswith(prefix + "/"):
-                active_scheme = info["scheme"]
-                active_netloc = info["netloc"]
-                stripped = req_path[len(prefix):]
-                base_path = info.get("base_path", "")
-                req_path = base_path + (stripped if stripped else "/")
-                if not req_path.startswith("/"):
-                    req_path = "/" + req_path
-                break
-        else:
-            if self.upstream_base_path:
-                req_path = self.upstream_base_path + req_path
+        if self.upstream_base_path:
+            req_path = self.upstream_base_path + req_path
 
         request_target = (req_path + "?" + req_query) if req_query else req_path
 
@@ -479,7 +462,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
 class ReverseProxy:
     """Manages the lifecycle of the reverse proxy HTTP server."""
 
-    def __init__(self, upstream_url, log_path, tags=None, extra_upstreams=None):
+    def __init__(self, upstream_url, log_path, tags=None):
         parsed = urllib.parse.urlparse(upstream_url)
         if parsed.scheme and parsed.netloc:
             self.upstream_scheme = parsed.scheme
@@ -492,10 +475,6 @@ class ReverseProxy:
             self.upstream_base_path = default.path.rstrip("/")
 
         self.tags = tags or []
-        # path_prefix → {scheme, netloc, base_path} for cloud-provider backends
-        # (Bedrock, Vertex AI, Azure Foundry). Built in main() from existing
-        # ANTHROPIC_BEDROCK_BASE_URL / ANTHROPIC_VERTEX_BASE_URL / ANTHROPIC_FOUNDRY_BASE_URL.
-        self.extra_upstreams = extra_upstreams or {}
         self.token_logger = TokenLogger(log_path)
         self._server = None
         self._thread = None
@@ -529,7 +508,6 @@ class ReverseProxy:
         BoundHandler.upstream_netloc = proxy.upstream_netloc
         BoundHandler.upstream_base_path = proxy.upstream_base_path
         BoundHandler.tags = proxy.tags
-        BoundHandler.extra_upstreams = proxy.extra_upstreams
         return BoundHandler
 
 
@@ -549,34 +527,6 @@ def format_summary(input_tokens, output_tokens, cache_read, cache_create, reques
     return "\n".join(lines)
 
 
-def _build_extra_upstreams():
-    """Collect pre-configured LLM-gateway URLs for cloud-provider backends.
-
-    Returns a path-prefix → upstream-info dict consumed by ReverseProxy. Only
-    backends whose *_BASE_URL env var is already set are included — native-SDK
-    backends (CLAUDE_CODE_USE_BEDROCK without an existing gateway URL) cannot
-    be intercepted without a format-translation layer and are left alone.
-    """
-    extra = {}
-    candidates = [
-        ("/--bedrock", os.environ.get("ANTHROPIC_BEDROCK_BASE_URL") or os.environ.get("ANTHROPIC_AWS_BASE_URL")),
-        ("/--vertex",  os.environ.get("ANTHROPIC_VERTEX_BASE_URL")),
-        ("/--foundry", os.environ.get("ANTHROPIC_FOUNDRY_BASE_URL")),
-    ]
-    for prefix, url in candidates:
-        if not url:
-            continue
-        parsed = urllib.parse.urlparse(url)
-        if not (parsed.scheme and parsed.netloc):
-            continue
-        extra[prefix] = {
-            "scheme": parsed.scheme,
-            "netloc": parsed.netloc,
-            "base_path": parsed.path.rstrip("/"),
-        }
-    return extra
-
-
 def main():
     tags, list_tags, claude_args = parse_args(sys.argv[1:])
 
@@ -593,30 +543,13 @@ def main():
     session_id = uuid.uuid4().hex[:8]
     _migrate_legacy_layout(Path.cwd(), identity, session_id)
 
-    # Save existing cloud-provider gateway URLs before the proxy overrides them.
-    # We only intercept backends that already have a gateway URL configured;
-    # native-SDK backends (e.g. CLAUDE_CODE_USE_BEDROCK without a gateway URL)
-    # cannot be intercepted without a format-translation layer.
-    extra_upstreams = _build_extra_upstreams()
-
     log_path = Path.cwd() / DDBYA_DIR / f"{USAGE_FILENAME_PREFIX}{identity}-{session_id}.ddbya"
-    proxy = ReverseProxy(upstream, log_path, tags=tags,
-                         extra_upstreams=extra_upstreams)
+    proxy = ReverseProxy(upstream, log_path, tags=tags)
     proxy.start()
 
     env = os.environ.copy()
     proxy_base = f"http://127.0.0.1:{proxy.port}"
     env["ANTHROPIC_BASE_URL"] = proxy_base
-    # Route each configured cloud-provider backend through the same proxy using
-    # path prefixes. ANTHROPIC_AWS_BASE_URL is an alias for ANTHROPIC_BEDROCK_BASE_URL;
-    # remove it to avoid Claude Code seeing conflicting values.
-    if "/--bedrock" in extra_upstreams:
-        env["ANTHROPIC_BEDROCK_BASE_URL"] = f"{proxy_base}/--bedrock"
-        env.pop("ANTHROPIC_AWS_BASE_URL", None)
-    if "/--vertex" in extra_upstreams:
-        env["ANTHROPIC_VERTEX_BASE_URL"] = f"{proxy_base}/--vertex"
-    if "/--foundry" in extra_upstreams:
-        env["ANTHROPIC_FOUNDRY_BASE_URL"] = f"{proxy_base}/--foundry"
 
     # Restore default SIGINT behaviour so Ctrl+C is forwarded to claude naturally.
     # Python installs its own SIGINT handler that raises KeyboardInterrupt;
