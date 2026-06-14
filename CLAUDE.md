@@ -50,7 +50,7 @@ Per-session filenames use the pattern `usage-<identity>-<session>.ddbya`, where 
 `ddbya-report` aggregates `.ddbya.d/usage-*.ddbya` files across multiple projects.
 
 ```
-ddbya-report /path/to/projects [--last N | --today] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]
+ddbya-report /path/to/projects [--last N | --today] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--model <model> ...] [--json | --csv]
 ```
 
 - If the given folder directly contains a `.ddbya.d/` with usage files, reports on that project only. Otherwise scans subdirectories recursively for `.ddbya.d/usage-*.ddbya` files.
@@ -60,6 +60,7 @@ ddbya-report /path/to/projects [--last N | --today] [--from YYYY-MM-DD] [--to YY
 - Includes all data by default. Pass `--last`, `--from`, `--to`, or `--today` to filter by date. `--today` is shorthand for `--from <today> --to <today>` and is mutually exclusive with `--last`, `--from`, and `--to`.
 - `--from`/`--to` can be used together or individually; `--from` without `--to` means "from that date to now".
 - `-t`/`--tag` filters to entries containing that tag. Can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. Example: `ddbya-report . -t /^Steve/ -t "code review"` matches entries whose tags include one starting with "Steve" AND one exactly "code review".
+- `--model` filters to entries whose model field matches the given value. Can be given multiple times (OR logic — entry matches if its model matches any filter). Supports `/ /` regex syntax. Example: `ddbya-report . --model /sonnet/ --model /opus/` matches entries from any Sonnet or Opus model.
 - `-t`/`--tag` with `+`/`-` prefix triggers retagging mode instead of reporting:
   - `-t +tagname` adds "tagname" to all matching entries.
   - `-t -tagname` removes "tagname" from all matching entries. Wrap in `/ /` for regex: `-t -/^Steve/`.

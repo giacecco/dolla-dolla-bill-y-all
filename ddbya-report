@@ -3,7 +3,7 @@
 Aggregate token usage across multiple Claude Code projects.
 
 Usage:
-    ddbya-report ROOT_FOLDER [--last N | --today] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]
+    ddbya-report ROOT_FOLDER [--last N | --today] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--model <model> ...] [--json | --csv]
     ddbya-report ROOT_FOLDER -t <filter> -t +<tag>   add tags to matching entries
     ddbya-report ROOT_FOLDER -t <filter> -t -<tag>   remove tags from matching entries
 
@@ -29,7 +29,7 @@ USAGE_GLOB = "usage-*.ddbya"
 def parse_args():
     args = sys.argv[1:]
     if not args:
-        sys.exit("Usage: ddbya-report ROOT_FOLDER [--last N | --today] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]\n"
+        sys.exit("Usage: ddbya-report ROOT_FOLDER [--last N | --today] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--model <model> ...] [--json | --csv]\n"
                  "       ddbya-report ROOT_FOLDER -t +/-TAG  (retag, in-place)")
 
     root = Path(args[0])
@@ -37,7 +37,7 @@ def parse_args():
         sys.exit(f"Not a directory: {root}")
 
     params = {"root": root, "last": None, "from": None, "to": None, "today": False,
-              "tags": [], "add_tags": [], "remove_tags": [], "json": False, "csv": False}
+              "tags": [], "add_tags": [], "remove_tags": [], "models": [], "json": False, "csv": False}
 
     i = 1
     while i < len(args):
@@ -80,6 +80,9 @@ def parse_args():
                 params["remove_tags"].append(tag)
             else:
                 params["tags"].append(val)
+            i += 2
+        elif args[i] == "--model" and i + 1 < len(args):
+            params["models"].append(args[i + 1])
             i += 2
         elif args[i] == "--json":
             params["json"] = True
@@ -159,7 +162,7 @@ def _discover_usage_paths(root):
             yield p, p.parent
 
 
-def collect_entries(root, from_date, to_date, tag_filters=None):
+def collect_entries(root, from_date, to_date, tag_filters=None, model_filters=None):
     usage = []
     for jsonl_path, project_dir in _discover_usage_paths(root):
         if project_dir == root:
@@ -194,6 +197,9 @@ def collect_entries(root, from_date, to_date, tag_filters=None):
                     any(_match_tag(pat, tag) for tag in entry_tags)
                     for pat in tag_filters
                 ):
+                    continue
+                entry_model = entry.get("model", "")
+                if model_filters and not any(_match_tag(pat, entry_model) for pat in model_filters):
                     continue
                 usage.append({
                     "project": project,
@@ -502,7 +508,7 @@ def main():
         print(f"Retagged {n} entr{'y' if n == 1 else 'ies'} across {files} file(s).")
         return
 
-    entries = collect_entries(params["root"], from_date, to_date, tag_filters=params["tags"])
+    entries = collect_entries(params["root"], from_date, to_date, tag_filters=params["tags"], model_filters=params["models"])
     rows = aggregate(entries)
     if params["json"]:
         output = {
