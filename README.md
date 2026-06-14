@@ -48,6 +48,31 @@ projects/                     ← cd here, run ddbya-report . # report all consu
 - **Tags** — `-t` labels every entry in a session so `ddbya-report` can filter by tag later, even across projects in different parent / client folders, e.g. to see how many tokens were spent on "code review" across all clients.
 - **Reporting** — point `ddbya-report` at a parent folder to aggregate across all its sub-projects, or at a single project folder to isolate one.
 
+### Per-project credentials with direnv
+
+Different projects or clients may require different `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, or Claude.ai subscription accounts. Use [direnv](https://direnv.net/) with a `.envrc` file at each project (or client) root to switch credentials automatically on `cd`:
+
+```sh
+# clients/client-acme/.envrc
+export ANTHROPIC_API_KEY=sk-ant-...acme
+export ANTHROPIC_BASE_URL=https://gateway.acme.example.com
+```
+
+```sh
+# clients/client-baker/.envrc
+export ANTHROPIC_API_KEY=sk-ant-...baker
+# no ANTHROPIC_BASE_URL → falls back to api.anthropic.com
+```
+
+For Claude.ai subscription accounts (Pro/Max), set `CLAUDE_CONFIG_DIR` instead of an API key, pointing at a config directory that has already been logged into the relevant account:
+
+```sh
+# internal/my-project/.envrc
+export CLAUDE_CONFIG_DIR=~/.config/claude-personal
+```
+
+direnv walks up the directory tree, so a `.envrc` at `clients/client-acme/` is picked up when you `cd` directly into any subdirectory of it. The folder structure then provides natural consumption attribution in `ddbya-report` with no manual tagging required.
+
 ## Cloud-provider backends
 
 ddbya can intercept traffic to AWS Bedrock, Google Vertex AI, and Microsoft Azure Foundry when you have an LLM gateway already configured. Set the relevant base URL env var **before** launching ddbya:
