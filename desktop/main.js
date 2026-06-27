@@ -122,15 +122,21 @@ class TokenLogger {
     this.logPath = logPath;
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
     this.fd = fs.openSync(logPath, 'a');
+    this.closed = false;
   }
 
   log(entry) {
+    if (this.closed) return;
     entry.timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
     const sorted = Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b)));
     fs.writeSync(this.fd, JSON.stringify(sorted) + '\n');
   }
 
-  close() { try { fs.closeSync(this.fd); } catch {} }
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    try { fs.closeSync(this.fd); } catch {}
+  }
 }
 
 // ── Reverse proxy ─────────────────────────────────────────────────────────────
@@ -791,6 +797,10 @@ app.on('window-all-closed', () => {});
 
 app.on('before-quit', () => {
   unsetProxyEnv();
+  if (proxyServer) {
+    for (const s of proxySockets) s.destroy();
+    proxySockets.clear();
+    proxyServer.close();
+  }
   if (tokenLogger) tokenLogger.close();
-  if (proxyServer) proxyServer.close();
 });
