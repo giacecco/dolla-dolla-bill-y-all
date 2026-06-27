@@ -20,6 +20,17 @@ const USAGE_GLOB_RE = /^usage-.+\.ddbya$/;
 const DEFAULT_UPSTREAM = 'https://api.anthropic.com';
 const DEFAULT_PORT = 18723;
 
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+function loadSettings() {
+  const state = loadState();
+  return { upstreamBaseUrl: state.upstreamBaseUrl || DEFAULT_UPSTREAM };
+}
+
+function saveSettings(settings) {
+  saveState({ upstreamBaseUrl: settings.upstreamBaseUrl || DEFAULT_UPSTREAM });
+}
+
 // ── Platform paths ────────────────────────────────────────────────────────────
 
 const isMac = process.platform === 'darwin';
@@ -408,6 +419,7 @@ function exportCsvReport(from, to) {
 
 let tagsWin = null;
 let reportWin = null;
+let settingsWin = null;
 
 function openTagsWindow() {
   if (tagsWin && !tagsWin.isDestroyed()) { tagsWin.focus(); return; }
@@ -437,6 +449,20 @@ function openReportWindow() {
   reportWin.on('closed', () => { reportWin = null; });
 }
 
+function openSettingsWindow() {
+  if (settingsWin && !settingsWin.isDestroyed()) { settingsWin.focus(); return; }
+  settingsWin = new BrowserWindow({
+    width: 560,
+    height: 420,
+    title: 'Settings — ddbya Desktop',
+    resizable: false,
+    fullscreenable: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
+  });
+  settingsWin.loadFile(path.join(__dirname, 'renderer', 'settings.html'));
+  settingsWin.on('closed', () => { settingsWin = null; });
+}
+
 // ── Tray ──────────────────────────────────────────────────────────────────────
 
 let tray = null;
@@ -451,6 +477,7 @@ function buildMenu() {
     { label: `Proxy on port ${currentPort}`, enabled: false },
     { label: tagLabel, enabled: false },
     { type: 'separator' },
+    { label: 'Settings…', click: openSettingsWindow },
     { label: 'Change Tags…', click: openTagsWindow },
     { label: 'Export Report (CSV)…', click: openReportWindow },
     { label: 'Open Session Log', click: () => { if (currentLogPath) shell.openPath(currentLogPath); } },
@@ -481,6 +508,15 @@ ipcMain.handle('save-tags', (_event, tags) => {
   currentTags = Array.isArray(tags) ? tags.filter(t => typeof t === 'string' && t.trim()) : [];
   saveState({ tags: currentTags });
   rebuildTrayMenu();
+});
+
+ipcMain.handle('get-settings', () => ({
+  ...loadSettings(),
+  proxyUrl: `http://127.0.0.1:${currentPort}`,
+}));
+
+ipcMain.handle('save-settings', (_event, settings) => {
+  saveSettings(settings);
 });
 
 ipcMain.handle('export-csv', async (_event, { from, to }) => {
@@ -537,8 +573,9 @@ app.whenReady().then(async () => {
   // Load saved tags
   currentTags = loadState().tags || [];
 
-  // Start proxy
-  proxyServer = buildProxy(DEFAULT_UPSTREAM, tokenLogger, () => currentTags);
+  // Start proxy — use saved upstream base URL, not env var
+  const upstream = loadSettings().upstreamBaseUrl;
+  proxyServer = buildProxy(upstream, tokenLogger, () => currentTags);
   await new Promise(resolve => proxyServer.listen(currentPort, '127.0.0.1', resolve));
 
   // Register proxy URL with launchd (macOS) / registry (Windows) so Claude
