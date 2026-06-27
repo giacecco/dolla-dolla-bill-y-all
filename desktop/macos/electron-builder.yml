@@ -10,6 +10,10 @@ files:
   - "!windows/**"
   - "!node_modules/.cache/**"
 
+extraResources:
+  - from: "../ddbya-report"
+    to: "ddbya-report"
+
 # Signing is handled by macos/sign.js (custom script) because macOS Spotlight
 # re-adds com.apple.FinderInfo to .app directories between afterPack and the
 # codesign calls when using electron-builder's built-in signing, causing

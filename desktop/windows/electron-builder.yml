@@ -10,6 +10,10 @@ files:
   - "!windows/**"
   - "!node_modules/.cache/**"
 
+extraResources:
+  - from: "../ddbya-report"
+    to: "ddbya-report"
+
 win:
   target:
     - target: nsis

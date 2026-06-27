@@ -345,7 +345,11 @@ function launchClaudeDesktop(port) {
 // ── Report export ─────────────────────────────────────────────────────────────
 
 function exportCsvReport(from, to) {
-  const scriptPath = path.join(__dirname, '..', 'ddbya-report');
+  // In development __dirname = desktop/, so ../ddbya-report = repo root script.
+  // When packaged, electron-builder copies it to Contents/Resources/ddbya-report.
+  const scriptPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'ddbya-report')
+    : path.join(__dirname, '..', 'ddbya-report');
   const cdFolder = path.join(APP_SUPPORT, 'Claude Desktop');
   const args = [cdFolder, '--csv'];
   if (from) { args.push('--from', from); }
