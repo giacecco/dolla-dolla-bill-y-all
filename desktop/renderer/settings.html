@@ -105,7 +105,15 @@
 <div>
   <label for="baseUrl">Upstream API base URL</label>
   <input type="text" id="baseUrl" placeholder="https://api.anthropic.com">
-  <div class="hint">Where ddbya forwards requests to. Leave as default unless you use a custom Anthropic-compatible gateway.</div>
+  <div class="hint">Where ddbya forwards requests to. Changes take effect immediately — no restart needed.</div>
+</div>
+
+<div style="margin-top:14px;">
+  <label style="display:flex;align-items:center;gap:8px;font-weight:500;cursor:pointer;">
+    <input type="checkbox" id="disableBeta">
+    Disable beta features
+  </label>
+  <div class="hint" style="margin-top:4px;">Strips <code>anthropic-beta</code> headers, <code>cache_control</code> fields, and normalises the <code>system</code> prompt to a plain string. Required for gateways that don't support newer Anthropic API features.</div>
 </div>
 
 <hr>
@@ -136,6 +144,7 @@
     try {
       const s = await window.ddbya.getSettings();
       document.getElementById('baseUrl').value = s.upstreamBaseUrl || 'https://api.anthropic.com';
+      document.getElementById('disableBeta').checked = !!s.disableBeta;
       proxyUrl = s.proxyUrl || '';
       document.getElementById('proxyUrl').textContent = proxyUrl || '(not yet available)';
     } catch (e) {
@@ -156,7 +165,10 @@
     const url = document.getElementById('baseUrl').value.trim();
     if (!url) { document.getElementById('err').textContent = 'Base URL cannot be empty.'; return; }
     try {
-      await window.ddbya.saveSettings({ upstreamBaseUrl: url });
+      await window.ddbya.saveSettings({
+        upstreamBaseUrl: url,
+        disableBeta: document.getElementById('disableBeta').checked,
+      });
       await window.ddbya.closeWindow();
     } catch (e) {
       document.getElementById('err').textContent = 'Save failed: ' + e.message;

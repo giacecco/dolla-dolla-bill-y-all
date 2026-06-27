@@ -3,6 +3,9 @@
 const {
   app, Tray, Menu, nativeImage, BrowserWindow, dialog, ipcMain, shell, clipboard,
 } = require('electron');
+
+// Must be set before app is ready; the setter companion goes inside whenReady().
+app.commandLine.appendSwitch('disable-renderer-accessibility');
 const http = require('http');
 const https = require('https');
 const net = require('net');
@@ -24,11 +27,17 @@ const DEFAULT_PORT = 18723;
 
 function loadSettings() {
   const state = loadState();
-  return { upstreamBaseUrl: state.upstreamBaseUrl || DEFAULT_UPSTREAM };
+  return {
+    upstreamBaseUrl: state.upstreamBaseUrl || DEFAULT_UPSTREAM,
+    disableBeta: state.disableBeta || state.disableCaching || false,
+  };
 }
 
 function saveSettings(settings) {
-  saveState({ upstreamBaseUrl: settings.upstreamBaseUrl || DEFAULT_UPSTREAM });
+  saveState({
+    upstreamBaseUrl: settings.upstreamBaseUrl || DEFAULT_UPSTREAM,
+    disableBeta: !!settings.disableBeta,
+  });
 }
 
 // ── Platform paths ────────────────────────────────────────────────────────────
@@ -123,15 +132,32 @@ class TokenLogger {
 
 // ── Reverse proxy ─────────────────────────────────────────────────────────────
 
-function buildProxy(upstream, logger, tagsGetter) {
+function stripCacheControl(obj) {
+  if (Array.isArray(obj)) return obj.map(stripCacheControl);
+  if (obj && typeof obj === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (k === 'cache_control') continue;
+      out[k] = stripCacheControl(v);
+    }
+    return out;
+  }
+  return obj;
+}
+
+// optsRef is a plain object { disableBeta } that callers may mutate after
+// buildProxy returns — each incoming request reads it fresh, so changes take
+// effect immediately without restarting the server.
+function buildProxy(upstream, logger, tagsGetter, optsRef) {
   const upUrl = new URL(upstream);
   const isUpHttps = upUrl.protocol === 'https:';
+  const upBasePath = upUrl.pathname.replace(/\/$/, '');
 
   function forwardRequest(req, res) {
     const chunks = [];
     req.on('data', c => chunks.push(c));
     req.on('end', () => {
-      const body = Buffer.concat(chunks);
+      let body = Buffer.concat(chunks);
 
       let isStreaming = false;
       try { isStreaming = !!JSON.parse(body).stream; } catch {}
@@ -143,10 +169,57 @@ function buildProxy(upstream, logger, tagsGetter) {
         upHeaders[k] = v;
       }
 
+      const dbgLog = path.join(APP_SUPPORT, 'debug.log');
+      const dbg = (msg) => {
+        try { fs.appendFileSync(dbgLog, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+      };
+
+      dbg(`${req.method} ${req.url} disableBeta=${optsRef.disableBeta} bodyLen=${body.length}`);
+
+      // Strip ?beta query param from forwarded URL regardless of disableBeta
+      let forwardUrl = req.url;
+      if (optsRef.disableBeta) {
+        try {
+          const u = new URL(req.url, 'http://localhost');
+          u.searchParams.delete('beta');
+          forwardUrl = u.pathname + (u.search.length > 1 ? u.search : '');
+        } catch {}
+      }
+
+      if (optsRef.disableBeta && body.length > 0) {
+        try {
+          const parsed = JSON.parse(body.toString());
+          let obj = stripCacheControl(parsed);
+          // Bedrock requires system to be a plain string, not an array of blocks
+          if (Array.isArray(obj.system)) {
+            obj.system = obj.system
+              .filter(b => b && b.type === 'text')
+              .map(b => (typeof b.text === 'string' ? b.text : ''))
+              .join('\n\n');
+          }
+          body = Buffer.from(JSON.stringify(obj));
+          // Replace content-length (any case) with the new body size
+          for (const k of Object.keys(upHeaders)) {
+            if (k.toLowerCase() === 'content-length') delete upHeaders[k];
+          }
+          upHeaders['content-length'] = String(body.length);
+          dbg(`transform OK newBodyLen=${body.length}`);
+        } catch (e) {
+          dbg(`transform FAILED: ${e.message} rawBody=${body.toString('utf8', 0, 200)}`);
+        }
+      }
+
+      // Remove anthropic-beta header entirely when beta features are disabled
+      if (optsRef.disableBeta) {
+        for (const k of Object.keys(upHeaders)) {
+          if (k.toLowerCase() === 'anthropic-beta') delete upHeaders[k];
+        }
+      }
+
       const opts = {
         hostname: upUrl.hostname,
         port: upUrl.port || (isUpHttps ? 443 : 80),
-        path: req.url,
+        path: upBasePath + forwardUrl,
         method: req.method,
         headers: upHeaders,
         timeout: 300000,
@@ -154,6 +227,7 @@ function buildProxy(upstream, logger, tagsGetter) {
 
       const proto = isUpHttps ? https : http;
       const upReq = proto.request(opts, upRes => {
+        dbg(`→ ${upRes.statusCode} ${req.method} ${req.url}`);
         const isGzip = (upRes.headers['content-encoding'] || '').toLowerCase() === 'gzip';
 
         const resHeaders = {};
@@ -166,7 +240,19 @@ function buildProxy(upstream, logger, tagsGetter) {
         }
         try { res.writeHead(upRes.statusCode, resHeaders); } catch { return; }
 
-        if (isStreaming) {
+        if (isStreaming && upRes.statusCode >= 400) {
+          // Error on a streaming request — buffer and log it like a non-streaming error
+          const parts = [];
+          let stream = upRes;
+          if (isGzip) { const gz = zlib.createGunzip(); upRes.pipe(gz); stream = gz; }
+          stream.on('data', c => parts.push(c));
+          stream.on('end', () => {
+            const respBody = Buffer.concat(parts);
+            dbg(`error body (streaming): ${respBody.toString('utf8', 0, 500)}`);
+            try { res.end(respBody); } catch {}
+          });
+          stream.on('error', () => { try { res.end(); } catch {} });
+        } else if (isStreaming) {
           relayStream(upRes, res, isGzip, logger, tagsGetter);
         } else {
           const parts = [];
@@ -180,6 +266,9 @@ function buildProxy(upstream, logger, tagsGetter) {
           stream.on('end', () => {
             const respBody = Buffer.concat(parts);
             try { res.end(respBody); } catch {}
+            if (upRes.statusCode >= 400) {
+              dbg(`error body: ${respBody.toString('utf8', 0, 500)}`);
+            }
             extractUsageNonStream(respBody, logger, tagsGetter);
           });
           stream.on('error', () => { try { res.end(); } catch {} });
@@ -453,7 +542,7 @@ function openSettingsWindow() {
   if (settingsWin && !settingsWin.isDestroyed()) { settingsWin.focus(); return; }
   settingsWin = new BrowserWindow({
     width: 560,
-    height: 480,
+    height: 530,
     title: 'Settings — ddbya Desktop',
     resizable: false,
     fullscreenable: false,
@@ -515,8 +604,24 @@ ipcMain.handle('get-settings', () => ({
   proxyUrl: currentPort ? `http://127.0.0.1:${currentPort}` : null,
 }));
 
-ipcMain.handle('save-settings', (_event, settings) => {
+ipcMain.handle('save-settings', async (_event, settings) => {
+  const prev = loadSettings();
   saveSettings(settings);
+  const next = loadSettings();
+
+  // disableBeta takes effect immediately — mutate the live opts object
+  proxyOpts.disableBeta = next.disableBeta;
+
+  // Upstream URL change requires a new server instance; force-close all sockets
+  if (next.upstreamBaseUrl !== prev.upstreamBaseUrl && proxyServer) {
+    for (const s of proxySockets) s.destroy();
+    proxySockets.clear();
+    await new Promise(resolve => proxyServer.close(resolve));
+    proxyOpts = { disableBeta: next.disableBeta };
+    proxyServer = buildProxy(next.upstreamBaseUrl, tokenLogger, () => currentTags, proxyOpts);
+    proxyServer.on('connection', s => { proxySockets.add(s); s.on('close', () => proxySockets.delete(s)); });
+    await new Promise(resolve => proxyServer.listen(currentPort, '127.0.0.1', resolve));
+  }
 });
 
 ipcMain.handle('copy-to-clipboard', (_event, text) => {
@@ -546,10 +651,15 @@ ipcMain.handle('save-csv', async (_event, { csv: csvContent, defaultName }) => {
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
 let proxyServer = null;
+let proxyOpts = { disableBeta: false };
+const proxySockets = new Set();
 let tokenLogger = null;
 let currentLogPath = null;
 
 app.whenReady().then(async () => {
+  // Disable accessibility support (setter must be called after ready)
+  app.accessibilitySupportEnabled = false;
+
   // Single-instance enforcement
   if (!app.requestSingleInstanceLock()) {
     app.quit();
@@ -583,8 +693,10 @@ app.whenReady().then(async () => {
   currentTags = loadState().tags || [];
 
   // Start proxy — use saved upstream base URL, not env var
-  const upstream = loadSettings().upstreamBaseUrl;
-  proxyServer = buildProxy(upstream, tokenLogger, () => currentTags);
+  const { upstreamBaseUrl: upstream, disableBeta } = loadSettings();
+  proxyOpts = { disableBeta };
+  proxyServer = buildProxy(upstream, tokenLogger, () => currentTags, proxyOpts);
+  proxyServer.on('connection', s => { proxySockets.add(s); s.on('close', () => proxySockets.delete(s)); });
   await new Promise(resolve => proxyServer.listen(currentPort, '127.0.0.1', resolve));
 
   // Register proxy URL with launchd (macOS) / registry (Windows) so Claude

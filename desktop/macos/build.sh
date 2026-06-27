@@ -16,7 +16,7 @@ for arg in "$@"; do
   [[ "${arg}" == "--notarise" ]] && NOTARISE=true
 done
 
-echo "==> ddbya Desktop — macOS build${NOTARISE:+ (with notarisation)}"
+echo "==> ddbya Desktop — macOS build$([[ "${NOTARISE}" == true ]] && echo ' (with notarisation)')"
 echo "    Desktop root: ${DESKTOP_DIR}"
 
 # ── Prerequisites ─────────────────────────────────────────────────────────────
