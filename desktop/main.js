@@ -644,6 +644,19 @@ ipcMain.handle('get-settings', () => ({
 }));
 
 ipcMain.handle('save-settings', async (_event, settings) => {
+  if (settings.upstreamBaseUrl !== undefined) {
+    let parsed;
+    try { parsed = new URL(settings.upstreamBaseUrl); } catch {
+      throw new Error('Invalid upstream URL');
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('Upstream URL must use http or https');
+    }
+    if (!parsed.hostname) {
+      throw new Error('Upstream URL must have a hostname');
+    }
+  }
+
   const prev = loadSettings();
   saveSettings(settings);
   const next = loadSettings();
