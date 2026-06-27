@@ -327,7 +327,28 @@ function unsetProxyEnv() {
   }
 }
 
-function launchClaudeDesktop(port) {
+function isClaudeDesktopRunning() {
+  try {
+    if (isMac) {
+      const out = execSync('pgrep -x Claude', { timeout: 3000 }).toString().trim();
+      return out.length > 0;
+    }
+    if (isWin) {
+      const out = execSync('tasklist /FI "IMAGENAME eq claude.exe" /NH', { timeout: 3000 }).toString();
+      return out.toLowerCase().includes('claude.exe');
+    }
+  } catch {}
+  return false;
+}
+
+function killClaudeDesktop() {
+  try {
+    if (isMac) execSync('pkill -x Claude', { timeout: 3000 });
+    if (isWin) execSync('taskkill /IM claude.exe /F', { shell: true, timeout: 3000 });
+  } catch {}
+}
+
+async function launchClaudeDesktop(port) {
   const claudePath = findClaudeDesktop();
   if (!claudePath) {
     dialog.showErrorBox(
@@ -338,6 +359,21 @@ function launchClaudeDesktop(port) {
     );
     return;
   }
+
+  if (isClaudeDesktopRunning()) {
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Claude Desktop is already running',
+      message: 'Claude Desktop is already open and its token consumption will not be recorded by ddbya.\n\nClose the existing session and relaunch it through ddbya Desktop so all usage is logged.',
+      buttons: ['Close and Relaunch', 'Cancel'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response !== 0) return;
+    killClaudeDesktop();
+    await new Promise(r => setTimeout(r, 800));
+  }
+
   const env = { ...process.env, ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}` };
   spawn(claudePath, [], { detached: true, stdio: 'ignore', env }).unref();
 }
@@ -417,6 +453,7 @@ function buildMenu() {
     { type: 'separator' },
     { label: 'Change Tags…', click: openTagsWindow },
     { label: 'Export Report (CSV)…', click: openReportWindow },
+    { label: 'Open Session Log', click: () => { if (currentLogPath) shell.openPath(currentLogPath); } },
     { type: 'separator' },
     { label: 'Launch Claude Desktop', click: () => launchClaudeDesktop(currentPort) },
     { type: 'separator' },
@@ -465,6 +502,7 @@ ipcMain.handle('save-csv', async (_event, { csv: csvContent, defaultName }) => {
 
 let proxyServer = null;
 let tokenLogger = null;
+let currentLogPath = null;
 
 app.whenReady().then(async () => {
   // Single-instance enforcement
@@ -480,8 +518,8 @@ app.whenReady().then(async () => {
   fs.mkdirSync(CD_LOG_DIR, { recursive: true });
   const identity = resolveIdentity();
   const sessionId = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
-  const logPath = path.join(CD_LOG_DIR, `usage-${identity}-${sessionId}.ddbya`);
-  tokenLogger = new TokenLogger(logPath);
+  currentLogPath = path.join(CD_LOG_DIR, `usage-${identity}-${sessionId}.ddbya`);
+  tokenLogger = new TokenLogger(currentLogPath);
 
   // Acquire port (persistent across restarts unless in use)
   currentPort = await acquirePort();
@@ -506,6 +544,25 @@ app.whenReady().then(async () => {
   // Register proxy URL with launchd (macOS) / registry (Windows) so Claude
   // Desktop picks it up on next launch — even if started from Finder/Spotlight.
   setProxyEnv(currentPort);
+
+  // Warn if Claude Desktop is already running without the proxy
+  if (isClaudeDesktopRunning()) {
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Claude Desktop is already running',
+      message: 'Claude Desktop is open and its token consumption is not being recorded.\n\nClose the existing session and relaunch it through ddbya Desktop (via the menu bar icon) so all usage is logged.',
+      buttons: ['Close and Relaunch Now', 'I\'ll Do It Later'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response === 0) {
+      killClaudeDesktop();
+      await new Promise(r => setTimeout(r, 800));
+      const env = { ...process.env, ANTHROPIC_BASE_URL: `http://127.0.0.1:${currentPort}` };
+      const claudePath = findClaudeDesktop();
+      if (claudePath) spawn(claudePath, [], { detached: true, stdio: 'ignore', env }).unref();
+    }
+  }
 
   // Create tray icon
   const iconPath = path.join(__dirname, 'assets', 'icon.png');

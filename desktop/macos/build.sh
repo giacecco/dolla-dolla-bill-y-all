@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
-# Build, sign, notarize, and deploy ddbya Desktop to /Applications.
-# Run from anywhere inside the repo:
-#   bash desktop/macos/build.sh
+# Build, sign, and deploy ddbya Desktop to /Applications.
+# Pass --notarise to also notarise before deploying (do this before git push).
+#
+#   bash desktop/macos/build.sh              # local dev: build + sign + deploy
+#   bash desktop/macos/build.sh --notarise   # pre-push: build + sign + notarise + deploy
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DESKTOP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 IDENTITY="Developer ID Application: Gianfranco Cecconi (W52V7H5858)"
+NOTARISE=false
 
-echo "==> ddbya Desktop — macOS build"
+for arg in "$@"; do
+  [[ "${arg}" == "--notarise" ]] && NOTARISE=true
+done
+
+echo "==> ddbya Desktop — macOS build${NOTARISE:+ (with notarisation)}"
 echo "    Desktop root: ${DESKTOP_DIR}"
 
 # ── Prerequisites ─────────────────────────────────────────────────────────────
@@ -21,17 +28,19 @@ if ! command -v magick &>/dev/null && ! command -v convert &>/dev/null; then
   echo "error: ImageMagick not found. Run: brew install imagemagick" >&2; exit 1
 fi
 
-# ── Notarisation credentials ──────────────────────────────────────────────────
+# ── Notarisation credentials (only needed when --notarise is passed) ──────────
 
-if ! xcrun notarytool history --keychain-profile "ddbya-notarize" &>/dev/null 2>&1; then
-  echo ""
-  echo "==> Notarisation credentials not yet stored."
-  echo "    You need an app-specific password from https://appleid.apple.com"
-  echo ""
-  xcrun notarytool store-credentials "ddbya-notarize" \
-    --apple-id "giacecco@giacecco.com" \
-    --team-id  "W52V7H5858"
-  echo ""
+if [[ "${NOTARISE}" == true ]]; then
+  if ! xcrun notarytool history --keychain-profile "ddbya-notarize" &>/dev/null 2>&1; then
+    echo ""
+    echo "==> Notarisation credentials not yet stored."
+    echo "    You need an app-specific password from https://appleid.apple.com"
+    echo ""
+    xcrun notarytool store-credentials "ddbya-notarize" \
+      --apple-id "giacecco@giacecco.com" \
+      --team-id  "W52V7H5858"
+    echo ""
+  fi
 fi
 
 # ── Kill any running instance ─────────────────────────────────────────────────
@@ -69,20 +78,22 @@ node macos/sign.js "${APP_PATH}" "${IDENTITY}" macos/entitlements.plist
 echo "==> Verifying signature…"
 codesign --verify --deep --verbose=1 "${APP_PATH}" 2>&1
 
-# ── Notarize ──────────────────────────────────────────────────────────────────
+# ── Notarise (only when --notarise is passed) ─────────────────────────────────
 
-echo "==> Creating ZIP for notarisation…"
-ZIP_PATH="${DESKTOP_DIR}/macos/dist/ddbya-Desktop.zip"
-ditto -c -k --keepParent "${APP_PATH}" "${ZIP_PATH}"
+if [[ "${NOTARISE}" == true ]]; then
+  echo "==> Creating ZIP for notarisation…"
+  ZIP_PATH="${DESKTOP_DIR}/macos/dist/ddbya-Desktop.zip"
+  ditto -c -k --keepParent "${APP_PATH}" "${ZIP_PATH}"
 
-echo "==> Submitting for notarisation (this can take a few minutes)…"
-xcrun notarytool submit "${ZIP_PATH}" \
-  --keychain-profile "ddbya-notarize" \
-  --wait
+  echo "==> Submitting for notarisation (this can take a few minutes)…"
+  xcrun notarytool submit "${ZIP_PATH}" \
+    --keychain-profile "ddbya-notarize" \
+    --wait
 
-echo "==> Stapling notarisation ticket…"
-xcrun stapler staple "${APP_PATH}"
-rm -f "${ZIP_PATH}"
+  echo "==> Stapling notarisation ticket…"
+  xcrun stapler staple "${APP_PATH}"
+  rm -f "${ZIP_PATH}"
+fi
 
 # ── Deploy ────────────────────────────────────────────────────────────────────
 

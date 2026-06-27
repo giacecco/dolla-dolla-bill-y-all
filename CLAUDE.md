@@ -138,6 +138,8 @@ Signing identity: `Developer ID Application: Gianfranco Cecconi (W52V7H5858)`
 
 The script kills any running instance, builds a universal binary (arm64 + x86_64), signs with the Developer ID certificate, notarizes with Apple, staples the ticket, copies to `/Applications/`, and launches the new version.
 
+**Notarisation timing:** notarise only immediately before `git push`, not on every local build. Notarisation uploads the binary to Apple's servers and takes ~1 minute — unnecessary overhead for iterative local development. To build and deploy locally without notarisation, run the individual steps from `build.sh` up to but not including `xcrun notarytool submit`.
+
 **Signing note:** electron-builder's built-in signing is disabled (`identity: null` in the yml) because macOS Spotlight re-adds `com.apple.FinderInfo` to `.app` directories almost immediately after `xattr -d`, causing `codesign` to fail with "resource fork, Finder information, or similar detritus not allowed". `macos/sign.js` works around this by stripping that xattr immediately before each individual `codesign` call (within the same Node.js tick, before the filesystem daemon can restore it), retrying up to 5 times per item.
 
 ### Windows
