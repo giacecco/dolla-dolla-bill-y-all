@@ -164,6 +164,7 @@ function buildProxy(upstream, logger, tagsGetter, optsRef) {
 
   function forwardRequest(req, res) {
     const chunks = [];
+    req.on('error', () => res.destroy());
     req.on('data', c => chunks.push(c));
     req.on('end', () => {
       let body = Buffer.concat(chunks);
