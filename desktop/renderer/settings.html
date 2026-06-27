@@ -26,6 +26,7 @@
     font-family: 'SF Mono', 'Menlo', monospace;
     background: #fff;
     color: #1a1a1a;
+    user-select: text;
   }
   input[type="text"]:focus { outline: none; border-color: #4a90e2; box-shadow: 0 0 0 2px rgba(74,144,226,0.2); }
   .hint { font-size: 11px; color: #888; margin-top: 4px; }
@@ -37,24 +38,39 @@
     padding: 14px;
   }
   .instructions h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
-  .instructions p { color: #555; margin-bottom: 10px; line-height: 1.5; }
-  .kv { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
-  .kv .key { font-weight: 500; color: #444; min-width: 110px; }
-  .kv .val {
+  .instructions p { color: #555; margin-bottom: 8px; line-height: 1.5; }
+  .kv { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .kv .key { font-weight: 500; color: #444; min-width: 110px; flex-shrink: 0; }
+  .proxy-row { display: flex; gap: 6px; align-items: center; }
+  .proxy-val {
     font-family: 'SF Mono', 'Menlo', monospace;
     font-size: 12px;
     background: #f0f0f0;
-    padding: 3px 8px;
+    padding: 5px 8px;
     border-radius: 4px;
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    cursor: pointer;
     border: 1px solid #ddd;
+    flex: 1;
+    user-select: text;
+    color: #1a1a1a;
   }
-  .kv .val:hover { background: #e4e4e4; }
-  .copy-hint { font-size: 10px; color: #aaa; margin-top: 2px; }
+  .copy-btn {
+    padding: 4px 10px;
+    font-size: 11px;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+    background: #fff;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .copy-btn:hover { background: #e8e8e8; }
+  code {
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-size: 12px;
+    background: #f0f0f0;
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
   .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
   button {
     padding: 7px 18px;
@@ -91,10 +107,12 @@
   <p>In Claude Desktop, go to <strong>Settings → Developer</strong> and enter:</p>
   <div class="kv">
     <span class="key">API Base URL</span>
-    <span class="val" id="proxyUrl" title="Click to copy"></span>
+    <div class="proxy-row">
+      <span class="proxy-val" id="proxyUrl"></span>
+      <button class="copy-btn" id="copyBtn">Copy</button>
+    </div>
   </div>
-  <div class="copy-hint">Click to copy</div>
-  <p style="margin-top:10px;">Set your <strong>Auth Token</strong> to your <code>ANTHROPIC_AUTH_TOKEN</code> (starts with <code>sk-ant-</code>). ddbya passes it through to the upstream — it is never stored here.</p>
+  <p style="margin-top:10px;">For <strong>Auth Token</strong>, enter your <code>ANTHROPIC_AUTH_TOKEN</code> (starts with <code>sk-ant-</code>) directly in Claude Desktop. ddbya passes it through to the upstream unchanged and never stores it.</p>
 </div>
 
 <div id="status"></div>
@@ -104,31 +122,37 @@
 </div>
 
 <script>
-  const $ = id => document.getElementById(id);
-
   async function load() {
     const s = await window.ddbya.getSettings();
-    $('baseUrl').value = s.upstreamBaseUrl || 'https://api.anthropic.com';
-    $('proxyUrl').textContent = s.proxyUrl || '';
-    $('proxyUrl').title = 'Click to copy: ' + s.proxyUrl;
+    document.getElementById('baseUrl').value = s.upstreamBaseUrl || 'https://api.anthropic.com';
+    document.getElementById('proxyUrl').textContent = s.proxyUrl || '(not available)';
   }
 
-  $('proxyUrl').addEventListener('click', () => {
-    navigator.clipboard.writeText($('proxyUrl').textContent).then(() => {
-      $('status').textContent = 'Copied to clipboard.';
-      setTimeout(() => { $('status').textContent = ''; }, 2000);
-    });
+  document.getElementById('copyBtn').addEventListener('click', () => {
+    const text = document.getElementById('proxyUrl').textContent;
+    const el = document.createElement('textarea');
+    el.value = text;
+    el.style.position = 'fixed';
+    el.style.opacity = '0';
+    document.body.appendChild(el);
+    el.select();
+    document.execCommand('copy');
+    document.body.removeChild(el);
+    document.getElementById('copyBtn').textContent = 'Copied!';
+    setTimeout(() => { document.getElementById('copyBtn').textContent = 'Copy'; }, 2000);
   });
 
-  $('save').addEventListener('click', async () => {
-    const url = $('baseUrl').value.trim();
-    if (!url) { $('status').textContent = 'Base URL cannot be empty.'; return; }
+  document.getElementById('save').addEventListener('click', async () => {
+    const url = document.getElementById('baseUrl').value.trim();
+    if (!url) {
+      document.getElementById('status').textContent = 'Base URL cannot be empty.';
+      return;
+    }
     await window.ddbya.saveSettings({ upstreamBaseUrl: url });
-    $('status').textContent = 'Saved. Restart ddbya Desktop for changes to take effect.';
-    setTimeout(() => { $('status').textContent = ''; }, 3000);
+    window.close();
   });
 
-  $('cancel').addEventListener('click', () => window.close());
+  document.getElementById('cancel').addEventListener('click', () => window.close());
 
   load();
 </script>
