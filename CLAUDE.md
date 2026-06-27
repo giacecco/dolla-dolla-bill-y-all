@@ -56,8 +56,7 @@ ddbya-report --help   (no folder required)
 ```
 
 - If the given folder directly contains a `.ddbya.d/` with usage files, reports on that project only. Otherwise scans subdirectories recursively for `.ddbya.d/usage-*.ddbya` files.
-- **Claude Desktop logs** (`~/Library/Application Support/ddbya/Claude Desktop/.ddbya.d/` on macOS; `%APPDATA%\ddbya\Claude Desktop\.ddbya.d\` on Windows) are always included as project `*Claude Desktop*`, unless they are already within the specified root (to avoid double-counting).
-- Legacy `.token-usage.ddbya` files (not yet migrated) are also read as a fallback.
+- **Claude Desktop logs** (`~/Library/Application Support/ddbya/Claude Desktop/.ddbya.d/` on macOS; `%APPDATA%\ddbya\Claude Desktop\.ddbya.d\` on Windows) are always included as project `*Claude Desktop*`, unless they are already within the specified root (to avoid double-counting). `*Claude Desktop*` does not get a `(subtotal)` row in tabular output.
 - Project name = top-level subfolder under the given root that contains the `.ddbya.d/` directory (first path component after root). If the directory is directly in root, uses root's directory name.
 - Aggregates by project, model, and tags (across all per-user files in the same project). A Model column appears whenever any entry has a model field; a Tags column appears whenever any entry has tags.
 - Includes all data by default. Pass `--last`, `--from`, `--to`, or `--today` to filter by date. `--today` is shorthand for `--from <today> --to <today>` and is mutually exclusive with `--last`, `--from`, and `--to`.
