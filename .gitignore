@@ -11,3 +11,8 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# Desktop build outputs
+desktop/macos/dist/
+desktop/windows/dist/
+desktop/node_modules/
