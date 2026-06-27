@@ -1,5 +1,6 @@
 node_modules/
-dist/
+macos/dist/
+windows/dist/
 assets/icon.png
 assets/icon.icns
 assets/icon.ico

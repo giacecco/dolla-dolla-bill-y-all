@@ -99,6 +99,8 @@ ddbya-report --help   (no folder required)
 desktop/
   main.js                ← Electron main process: proxy + tray + IPC
   preload.js             ← contextBridge API for renderer windows
+  package.json
+  .gitignore
   renderer/
     tags.html            ← tags management UI
     report.html          ← CSV export UI
@@ -107,41 +109,46 @@ desktop/
     icon.png             ← generated at build time (not committed)
     icon.icns            ← generated at build time (not committed)
     icon.ico             ← generated at build time (not committed)
-  scripts/
-    generate-icons.js    ← ImageMagick-based icon generator
-    notarize.js          ← electron-builder afterSign hook
-    build-mac.sh         ← full build → sign → notarize → deploy pipeline
-  package.json
-  electron-builder.yml
-  entitlements.mac.plist
-  .gitignore
+  macos/
+    build.sh             ← full build → sign → notarize → deploy pipeline
+    electron-builder.yml ← packaging config (signing disabled; handled by sign.js)
+    sign.js              ← custom signing script (see Signing note below)
+    entitlements.plist   ← hardened runtime entitlements
+    generate-icons.js    ← qlmanage + ImageMagick icon generator
+    dist/                ← build output (not committed)
+  windows/
+    electron-builder.yml ← Windows packaging config
+    build.ps1            ← Windows build script
+    dist/                ← build output (not committed)
 ```
 
 ### Building for macOS
 
 ```bash
-bash desktop/scripts/build-mac.sh
+bash desktop/macos/build.sh
 ```
 
 Requirements:
 - Node.js and npm
 - ImageMagick (`brew install imagemagick`)
 - Xcode Command Line Tools (for `codesign`, `iconutil`, `xcrun notarytool`)
-- A notarisation app-specific password stored in Keychain as profile `ddbya-notarize` (the build script will prompt to create it on first run)
+- A notarisation app-specific password stored in Keychain as profile `ddbya-notarize` (the build script will prompt to create it on first run — generate the password at appleid.apple.com → App-Specific Passwords)
 
 Signing identity: `Developer ID Application: Gianfranco Cecconi (W52V7H5858)`
 
-The script kills any running instance, builds a universal binary (arm64 + x86_64), signs with the Developer ID certificate, notarizes with Apple, copies to `/Applications/`, and launches the new version.
+The script kills any running instance, builds a universal binary (arm64 + x86_64), signs with the Developer ID certificate, notarizes with Apple, staples the ticket, copies to `/Applications/`, and launches the new version.
+
+**Signing note:** electron-builder's built-in signing is disabled (`identity: null` in the yml) because macOS Spotlight re-adds `com.apple.FinderInfo` to `.app` directories almost immediately after `xattr -d`, causing `codesign` to fail with "resource fork, Finder information, or similar detritus not allowed". `macos/sign.js` works around this by stripping that xattr immediately before each individual `codesign` call (within the same Node.js tick, before the filesystem daemon can restore it), retrying up to 5 times per item.
 
 ### Windows
 
-`desktop/` contains Windows build targets in `electron-builder.yml`. Build with:
-
 ```bash
-cd desktop && npm install && npx electron-builder --win
+cd desktop && npm install && npx electron-builder --win --config windows/electron-builder.yml
 ```
 
-Windows Authenticode signing is not yet configured (no certificate on file). Run `signtool.exe` manually or add a cert path to `electron-builder.yml` when a certificate is available.
+Or via PowerShell: `.\windows\build.ps1`
+
+Windows Authenticode signing is not yet configured (no certificate on file). Run `signtool.exe` manually or add a cert path to `windows/electron-builder.yml` when a certificate is available.
 
 ## Maintenance
 

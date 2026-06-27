@@ -1,0 +1,24 @@
+appId: com.giacecco.ddbya-desktop
+productName: ddbya Desktop
+
+directories:
+  output: macos/dist
+
+files:
+  - "**/*"
+  - "!macos/**"
+  - "!windows/**"
+  - "!node_modules/.cache/**"
+
+# Signing is handled by macos/sign.js (custom script) because macOS Spotlight
+# re-adds com.apple.FinderInfo to .app directories between afterPack and the
+# codesign calls when using electron-builder's built-in signing, causing
+# "resource fork, Finder information, or similar detritus not allowed".
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dir
+      arch:
+        - universal
+  icon: assets/icon.icns
+  identity: null

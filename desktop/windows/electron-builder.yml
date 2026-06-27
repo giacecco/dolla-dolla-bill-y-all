@@ -1,0 +1,23 @@
+appId: com.giacecco.ddbya-desktop
+productName: ddbya Desktop
+
+directories:
+  output: windows/dist
+
+files:
+  - "**/*"
+  - "!macos/**"
+  - "!windows/**"
+  - "!node_modules/.cache/**"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: assets/icon.ico
+  # Authenticode signing: add certificateFile and certificatePassword when available
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

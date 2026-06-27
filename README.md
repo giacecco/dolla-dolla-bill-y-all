@@ -27,7 +27,7 @@ Requires Python 3. No pip packages needed — standard library only.
 
 ```sh
 cd dolla-dolla-bill-y-all
-bash desktop/scripts/build-mac.sh
+bash desktop/macos/build.sh
 ```
 
 Requirements: Node.js, npm, ImageMagick (`brew install imagemagick`), Xcode Command Line Tools.
