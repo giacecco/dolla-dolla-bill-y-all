@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
 <title>Settings — ddbya Desktop</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -133,10 +133,15 @@
   let proxyUrl = '';
 
   async function load() {
-    const s = await window.ddbya.getSettings();
-    document.getElementById('baseUrl').value = s.upstreamBaseUrl || 'https://api.anthropic.com';
-    proxyUrl = s.proxyUrl || '';
-    document.getElementById('proxyUrl').textContent = proxyUrl || '(not yet available — reopen after startup)';
+    try {
+      const s = await window.ddbya.getSettings();
+      document.getElementById('baseUrl').value = s.upstreamBaseUrl || 'https://api.anthropic.com';
+      proxyUrl = s.proxyUrl || '';
+      document.getElementById('proxyUrl').textContent = proxyUrl || '(not yet available)';
+    } catch (e) {
+      document.getElementById('proxyUrl').textContent = 'error: ' + e.message;
+      document.getElementById('err').textContent = 'Failed to load settings: ' + e.message;
+    }
   }
 
   document.getElementById('copyBtn').addEventListener('click', async () => {
@@ -150,11 +155,15 @@
   document.getElementById('save').addEventListener('click', async () => {
     const url = document.getElementById('baseUrl').value.trim();
     if (!url) { document.getElementById('err').textContent = 'Base URL cannot be empty.'; return; }
-    await window.ddbya.saveSettings({ upstreamBaseUrl: url });
-    window.close();
+    try {
+      await window.ddbya.saveSettings({ upstreamBaseUrl: url });
+      await window.ddbya.closeWindow();
+    } catch (e) {
+      document.getElementById('err').textContent = 'Save failed: ' + e.message;
+    }
   });
 
-  document.getElementById('cancel').addEventListener('click', () => window.close());
+  document.getElementById('cancel').addEventListener('click', () => window.ddbya.closeWindow());
 
   load();
 </script>

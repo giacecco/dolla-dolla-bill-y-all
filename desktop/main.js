@@ -523,6 +523,11 @@ ipcMain.handle('copy-to-clipboard', (_event, text) => {
   clipboard.writeText(text);
 });
 
+ipcMain.handle('close-window', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win) win.close();
+});
+
 ipcMain.handle('export-csv', async (_event, { from, to }) => {
   return exportCsvReport(from || null, to || null);
 });

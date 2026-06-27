@@ -10,5 +10,6 @@ contextBridge.exposeInMainWorld('ddbya', {
   saveCsv:        (csv, name)  => ipcRenderer.invoke('save-csv', { csv, defaultName: name }),
   getSettings:     ()           => ipcRenderer.invoke('get-settings'),
   saveSettings:    (s)          => ipcRenderer.invoke('save-settings', s),
-  copyToClipboard: (text)       => ipcRenderer.invoke('copy-to-clipboard', text),
+  copyToClipboard:  (text)       => ipcRenderer.invoke('copy-to-clipboard', text),
+  closeWindow:      ()           => ipcRenderer.invoke('close-window'),
 });
