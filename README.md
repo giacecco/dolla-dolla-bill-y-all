@@ -4,7 +4,7 @@ It's easy to recognise the cost effectiveness of using modern AI vs, for example
 
 dolla-dolla-bill-y-all provides two complementary tools:
 
-- **`ddbya`** — a zero-dependency CLI wrapper for Claude Code that logs token consumption per-project.
+- **`ddbya`** — a zero-dependency Node.js CLI wrapper for Claude Code that logs token consumption per-project.
 - **ddbya Desktop** — a macOS/Windows/Linux menu bar / tray app that intercepts Claude Desktop traffic the same way.
 
 Both log to the same JSONL format and `ddbya-report` aggregates them all into one report.
@@ -21,7 +21,7 @@ ln -s "$(pwd)/dolla-dolla-bill-y-all/ddbya" \
       /usr/local/bin/
 ```
 
-Requires Python 3. No pip packages needed — standard library only.
+Requires Node.js. No npm packages needed — built-in modules only.
 
 ### ddbya Desktop (macOS)
 
@@ -154,7 +154,7 @@ ddbya-report --help
 ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]
 ```
 
-If the given folder directly contains a `.ddbya.d/` with usage files, it reports on that project only. Otherwise it recursively scans all subdirectories for `.ddbya.d/usage-*.ddbya` files. Groups usage by top-level subfolder and tags. Includes all data by default — pass `--last`, `--from`, or `--to` to filter by date. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic). Tags wrapped in `/ /` are treated as regex. `--json` outputs compact JSON. `--csv` outputs CSV. Zero dependencies — Python 3 standard library only.
+If the given folder directly contains a `.ddbya.d/` with usage files, it reports on that project only. Otherwise it recursively scans all subdirectories for `.ddbya.d/usage-*.ddbya` files. Groups usage by top-level subfolder and tags. Includes all data by default — pass `--last`, `--from`, or `--to` to filter by date. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic). Tags wrapped in `/ /` are treated as regex. `--json` outputs compact JSON. `--csv` outputs CSV. Zero dependencies — Node.js built-in modules only.
 
 A spinner is shown on stderr while data is being read.
 

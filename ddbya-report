@@ -1,38 +1,31 @@
-#!/usr/bin/env python3
-"""
-Aggregate token usage across multiple Claude Code projects and Claude Desktop.
+#!/usr/bin/env node
+'use strict';
 
-Usage:
-    ddbya-report ROOT_FOLDER [OPTIONS]
-    ddbya-report ROOT_FOLDER -t <filter> -t +<tag>   add tags to matching entries
-    ddbya-report ROOT_FOLDER -t <filter> -t -<tag>   remove tags from matching entries
+/**
+ * Aggregate token usage across multiple Claude Code projects and Claude Desktop.
+ *
+ * Usage:
+ *   ddbya-report ROOT_FOLDER [OPTIONS]
+ *   ddbya-report ROOT_FOLDER -t <filter> -t +<tag>   add tags to matching entries
+ *   ddbya-report ROOT_FOLDER -t <filter> -t -<tag>   remove tags from matching entries
+ *
+ * Claude Desktop consumption (logged by the ddbya Desktop app) is always included
+ * as a project named "*Claude Desktop*", alongside the folder-based projects.
+ *
+ * Zero npm dependencies — Node.js built-ins only.
+ */
 
-Includes all data by default. Pass --last, --from, --to, or --today to filter by date.
-Retagging with -t +/- modifies .ddbya.d/usage-*.ddbya files in-place.
+const path = require('path');
+const {
+  CLAUDE_DESKTOP_PROJECT,
+  collectEntries,
+  retag,
+  aggregate,
+  report,
+  csvReport,
+} = require(path.join(__dirname, 'report-core.js'));
 
-Claude Desktop consumption (logged by the ddbya Desktop app) is always included
-as a project named "*Claude Desktop*", alongside the folder-based projects.
-
-Zero dependencies — Python 3 standard library only.
-"""
-
-import sys
-import os
-import csv
-import json
-import re
-import itertools
-import threading
-import time
-from datetime import datetime, timezone, timedelta
-from collections import defaultdict
-from pathlib import Path
-
-DDBYA_DIR = ".ddbya.d"
-USAGE_GLOB = "usage-*.ddbya"
-CLAUDE_DESKTOP_PROJECT = "*Claude Desktop*"
-
-_HELP = """\
+const HELP = `\
 Usage: ddbya-report ROOT_FOLDER [OPTIONS]
 
 Aggregate token usage across Claude Code projects and Claude Desktop.
@@ -41,7 +34,7 @@ Arguments:
   ROOT_FOLDER           Directory to scan. If it directly contains a .ddbya.d/
                         folder, reports on that project only; otherwise scans
                         all subdirectories recursively. Claude Desktop logs are
-                        always included as project "*Claude Desktop*".
+                        always included as project "${CLAUDE_DESKTOP_PROJECT}".
 
 Filtering:
   --last N              Include only the last N days.
@@ -67,593 +60,159 @@ Retagging (modifies files in-place; cannot combine with --json/--csv):
            Adds "hello" to every entry that already has tag "foobar".
 
 Other:
-  -h, --help            Show this message and exit.\
-"""
-
-
-def _claude_desktop_log_dir():
-    """Return the Claude Desktop .ddbya.d path for the current platform, or None."""
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "ddbya" / "Claude Desktop" / DDBYA_DIR
-    if sys.platform == "win32":
-        appdata = os.environ.get("APPDATA", "")
-        if appdata:
-            return Path(appdata) / "ddbya" / "Claude Desktop" / DDBYA_DIR
-        return None
-    xdg = os.environ.get("XDG_DATA_HOME", "")
-    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
-    return base / "ddbya" / "Claude Desktop" / DDBYA_DIR
-
-
-def parse_args():
-    args = sys.argv[1:]
-
-    # --help works even with no folder specified
-    if not args or args[0] in ("-h", "--help"):
-        print(_HELP)
-        sys.exit(0)
-
-    root = Path(args[0])
-    if not root.is_dir():
-        sys.exit(f"Not a directory: {root}")
-
-    params = {"root": root, "last": None, "from": None, "to": None, "today": False,
-              "tags": [], "add_tags": [], "remove_tags": [], "models": [], "json": False, "csv": False}
-
-    i = 1
-    while i < len(args):
-        if args[i] in ("-h", "--help"):
-            print(_HELP)
-            sys.exit(0)
-        elif args[i] == "--last" and i + 1 < len(args):
-            try:
-                params["last"] = int(args[i + 1])
-            except ValueError:
-                sys.exit(f"Invalid --last value: {args[i + 1]}")
-            i += 2
-        elif args[i] == "--from" and i + 1 < len(args):
-            try:
-                datetime.strptime(args[i + 1], "%Y-%m-%d")
-            except ValueError:
-                sys.exit(f"Invalid --from date (expected YYYY-MM-DD): {args[i + 1]}")
-            params["from"] = args[i + 1]
-            i += 2
-        elif args[i] == "--to" and i + 1 < len(args):
-            try:
-                datetime.strptime(args[i + 1], "%Y-%m-%d")
-            except ValueError:
-                sys.exit(f"Invalid --to date (expected YYYY-MM-DD): {args[i + 1]}")
-            params["to"] = args[i + 1]
-            i += 2
-        elif args[i] == "--today":
-            params["today"] = True
-            i += 1
-        elif args[i] in ("-t", "--tag"):
-            if i + 1 >= len(args):
-                sys.exit("error: -t/--tag requires a value")
-            val = args[i + 1]
-            if val.startswith("+") and not (val.startswith("/") and val.endswith("/")):
-                tag = val[1:]
-                if not tag:
-                    sys.exit("error: -t/+ requires a tag name")
-                params["add_tags"].append(tag)
-            elif val.startswith("-") and not (val.startswith("/") and val.endswith("/")):
-                tag = val[1:]
-                if not tag:
-                    sys.exit("error: -t/- requires a tag name")
-                params["remove_tags"].append(tag)
-            else:
-                params["tags"].append(val)
-            i += 2
-        elif args[i] == "--model" and i + 1 < len(args):
-            params["models"].append(args[i + 1])
-            i += 2
-        elif args[i] == "--json":
-            params["json"] = True
-            i += 1
-        elif args[i] == "--csv":
-            params["csv"] = True
-            i += 1
-        else:
-            sys.exit(f"Unknown argument: {args[i]}")
-
-    if params["today"] and (params["last"] is not None or params["from"] or params["to"]):
-        sys.exit("error: --today cannot be combined with --last, --from, or --to")
-    if params["last"] is not None and (params["from"] or params["to"]):
-        sys.exit("error: --last cannot be combined with --from or --to")
-    if params["json"] and params["csv"]:
-        sys.exit("error: --json and --csv are mutually exclusive")
-    if (params["add_tags"] or params["remove_tags"]) and (params["json"] or params["csv"]):
-        sys.exit("error: retagging (-t +/-) cannot be combined with --json or --csv")
-
-    return params
-
-
-def resolve_window(params):
-    now = datetime.now(timezone.utc)
-
-    if params["today"]:
-        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        return today, today + timedelta(days=1)
-
-    if params["to"]:
-        to_date = datetime.strptime(params["to"], "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
-    else:
-        to_date = None
-
-    if params["from"]:
-        from_date = datetime.strptime(params["from"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        if to_date is None:
-            to_date = now
-    elif params["last"] is not None:
-        from_date = now - timedelta(days=params["last"])
-        if to_date is None:
-            to_date = now
-    else:
-        from_date = None
-
-    return from_date, to_date
-
-
-def _match_tag(pattern, tag):
-    """If /pattern/, treat as regex; otherwise literal exact match."""
-    if pattern.startswith("/") and pattern.endswith("/") and len(pattern) > 2:
-        return re.search(pattern[1:-1], tag)
-    return pattern == tag
-
-
-def _discover_usage_paths(root):
-    """Yield (jsonl_path, project_dir) pairs for all usage files under root."""
-    direct_dir = root / ".ddbya.d"
-    usage_files = sorted(direct_dir.glob("usage-*.ddbya")) if direct_dir.is_dir() else []
-    if usage_files:
-        for p in usage_files:
-            yield p, root
-    else:
-        for p in sorted(root.rglob(".ddbya.d/usage-*.ddbya")):
-            yield p, p.parent.parent
-
-
-def _discover_claude_desktop_paths():
-    """Yield (jsonl_path, CLAUDE_DESKTOP_PROJECT) pairs for Claude Desktop logs."""
-    cd_dir = _claude_desktop_log_dir()
-    if cd_dir and cd_dir.is_dir():
-        for p in sorted(cd_dir.glob(USAGE_GLOB)):
-            yield p, CLAUDE_DESKTOP_PROJECT
-
-
-def _is_claude_desktop_path(jsonl_path):
-    """True if this file lives inside the Claude Desktop log directory."""
-    cd_dir = _claude_desktop_log_dir()
-    if not cd_dir:
-        return False
-    try:
-        jsonl_path.relative_to(cd_dir)
-        return True
-    except ValueError:
-        return False
-
-
-def _collect_from_file(jsonl_path, project, from_date, to_date, tag_filters, model_filters, usage):
-    try:
-        fh = open(jsonl_path, encoding="utf-8")
-    except OSError:
-        return
-    with fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-                ts = datetime.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-            except (json.JSONDecodeError, KeyError, ValueError):
-                continue
-            if from_date is not None and ts < from_date:
-                continue
-            if to_date is not None and ts >= to_date:
-                continue
-
-            entry_tags = entry.get("tags")
-            if isinstance(entry_tags, list):
-                entry_tags = sorted(entry_tags, key=str.lower)
-            else:
-                entry_tags = []
-            if tag_filters and not all(
-                any(_match_tag(pat, tag) for tag in entry_tags)
-                for pat in tag_filters
-            ):
-                continue
-            entry_model = entry.get("model", "")
-            if model_filters and not any(_match_tag(pat, entry_model) for pat in model_filters):
-                continue
-            usage.append({
-                "project": project,
-                "model": entry_model,
-                "tags": entry_tags,
-                "input_tokens": entry.get("input_tokens", 0),
-                "output_tokens": entry.get("output_tokens", 0),
-                "cache_read": entry.get("cache_read_input_tokens", 0),
-                "cache_create": entry.get("cache_creation_input_tokens", 0),
-                "requests": 1,
-            })
-
-
-def collect_entries(root, from_date, to_date, tag_filters=None, model_filters=None):
-    usage = []
-    cd_included = False
-
-    for jsonl_path, project_dir in _discover_usage_paths(root):
-        # If this file lives in the Claude Desktop dir, name it accordingly
-        # and mark that we've already included it (avoid double-counting later).
-        if _is_claude_desktop_path(jsonl_path):
-            project = CLAUDE_DESKTOP_PROJECT
-            cd_included = True
-        elif project_dir == root:
-            project = root.name or root.resolve().name
-        else:
-            project = project_dir.relative_to(root).parts[0]
-        _collect_from_file(jsonl_path, project, from_date, to_date, tag_filters, model_filters, usage)
-
-    # Always include Claude Desktop logs unless they were already part of root.
-    if not cd_included:
-        for jsonl_path, project in _discover_claude_desktop_paths():
-            _collect_from_file(jsonl_path, project, from_date, to_date, tag_filters, model_filters, usage)
-
-    return usage
-
-
-def retag(root, from_date, to_date, tag_filters, add_tags, remove_tags):
-    """Modify tags in .ddbya.d/usage-*.ddbya files in-place.
-
-    Returns (modified_entries, modified_files).
-    Operates on both folder-based logs and Claude Desktop logs.
-    """
-    paths = [p for p, _ in _discover_usage_paths(root)]
-    # Include Claude Desktop paths unless already under root
-    cd_dir = _claude_desktop_log_dir()
-    if cd_dir:
-        for p, _ in _discover_claude_desktop_paths():
-            try:
-                p.relative_to(root)
-            except ValueError:
-                paths.append(p)
-
-    total_modified = 0
-    files_modified = 0
-
-    for jsonl_path in paths:
-        modified = False
-        lines = []
-        try:
-            fh = open(jsonl_path, encoding="utf-8")
-        except OSError as exc:
-            print(f"ddbya-report: skipped {jsonl_path}: {exc}", file=sys.stderr)
-            continue
-        with fh:
-            for line in f:
-                stripped = line.strip()
-                if not stripped:
-                    lines.append(line)
-                    continue
-                try:
-                    entry = json.loads(stripped)
-                    ts = datetime.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                except (json.JSONDecodeError, KeyError, ValueError):
-                    lines.append(line)
-                    continue
-
-                if from_date is not None and ts < from_date:
-                    lines.append(line)
-                    continue
-                if to_date is not None and ts >= to_date:
-                    lines.append(line)
-                    continue
-
-                entry_tags = entry.get("tags")
-                entry_tags = sorted(entry_tags, key=str.lower) if isinstance(entry_tags, list) else []
-
-                if tag_filters and not all(
-                    any(_match_tag(pat, tag) for tag in entry_tags)
-                    for pat in tag_filters
-                ):
-                    lines.append(line)
-                    continue
-
-                before = list(entry_tags)
-
-                for t in add_tags:
-                    if t not in entry_tags:
-                        entry_tags.append(t)
-
-                entry_tags = [t for t in entry_tags if not any(
-                    _match_tag(pat, t) for pat in remove_tags
-                )]
-
-                if entry_tags == before:
-                    lines.append(line)
-                    continue
-
-                if entry_tags:
-                    entry["tags"] = entry_tags
-                elif "tags" in entry:
-                    del entry["tags"]
-                lines.append(json.dumps(entry, sort_keys=True) + "\n")
-                total_modified += 1
-                modified = True
-
-        if modified:
-            tmp_path = jsonl_path.with_name(jsonl_path.name + ".tmp")
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.writelines(lines)
-            os.replace(tmp_path, jsonl_path)
-            files_modified += 1
-
-    return total_modified, files_modified
-
-
-def aggregate(entries):
-    key = lambda e: (e["project"], e["model"], tuple(e["tags"]))
-    groups = defaultdict(lambda: {"input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_create": 0, "requests": 0})
-
-    for e in entries:
-        k = key(e)
-        g = groups[k]
-        g["input_tokens"] += e["input_tokens"]
-        g["output_tokens"] += e["output_tokens"]
-        g["cache_read"] += e["cache_read"]
-        g["cache_create"] += e["cache_create"]
-        g["requests"] += e["requests"]
-
-    result = []
-    for (project, model, tags_tuple), g in sorted(groups.items()):
-        result.append({
-            "project": project,
-            "model": model,
-            "tags": list(tags_tuple),
-            **g,
-        })
-    return result
-
-
-def fmt(n):
-    if n == 0:
-        return "-"
-    return f"{n:,}"
-
-
-def _col_widths(rows):
-    """Compute column widths from data so long values never silently truncate."""
-    extra_labels = ["(subtotal)", "TOTAL"]
-
-    def lw(header, values):
-        return -(max(len(header), max((len(v) for v in values), default=0)))
-
-    def rw(header, values):
-        return max(len(header), max((len(v) for v in values), default=0))
-
-    show_tags = any(r.get("tags") for r in rows)
-    show_model = any(r.get("model") for r in rows)
-    _join = lambda t: " | ".join(t) if t else ""
-
-    projects = [r["project"] for r in rows] + extra_labels
-    models = [r.get("model", "") for r in rows] + [""]
-    all_tags = [_join(r["tags"]) for r in rows] + [""]
-    reqs = [fmt(r["requests"]) for r in rows]
-    inputs = [fmt(r["input_tokens"]) for r in rows]
-    totals = [fmt(r["input_tokens"] + r["cache_read"] + r["cache_create"]) for r in rows]
-    outputs = [fmt(r["output_tokens"]) for r in rows]
-    reads = [fmt(r["cache_read"]) for r in rows]
-    creates = [fmt(r["cache_create"]) for r in rows]
-
-    cols = [
-        ("Project",       lw("Project", projects)),
-    ]
-    if show_model:
-        cols.append(("Model", lw("Model", models)))
-    cols += [
-        ("Reqs",          rw("Reqs", reqs)),
-        ("Input (base)",  rw("Input (base)", inputs)),
-        ("Cache Read",    rw("Cache Read", reads)),
-        ("Cache Create",  rw("Cache Create", creates)),
-        ("Total Input",   rw("Total Input", totals)),
-        ("Output Tokens", rw("Output Tokens", outputs)),
-    ]
-    if show_tags:
-        cols.append(("Tags", lw("Tags", all_tags)))
-    return cols, show_tags, show_model
-
-
-def _build_row(values, cols_by_name):
-    """Build a table row from a list of (value, col_name) pairs."""
-    parts = []
-    for value, name in values:
-        _, width = cols_by_name[name]
-        if width < 0:
-            parts.append(f"{value:<{-width}}")
-        else:
-            parts.append(f"{value:>{width}}")
-    return "  ".join(parts)
-
-
-def report(rows, from_date, to_date):
-    _join = lambda t: " | ".join(t) if t else ""
-    if from_date is None:
-        header = "Token Usage Report — all data"
-    else:
-        to_display = to_date - timedelta(days=1)
-        if (to_display - from_date).days < 1:
-            header = f"Token Usage Report — {from_date.strftime('%Y-%m-%d')}"
-        else:
-            header = f"Token Usage Report — {from_date.strftime('%Y-%m-%d')} to {to_display.strftime('%Y-%m-%d')}"
-    print(header)
-    print()
-
-    if not rows:
-        print("No usage data found.")
-        return
-
-    cols, show_tags, show_model = _col_widths(rows)
-    cols_by_name = {name: (name, width) for name, width in cols}
-
-    header_line = "  ".join(f"{label:<{-width}}" if width < 0 else f"{label:>{width}}" for label, width in cols)
-    print(header_line)
-    print("  ".join("─" * abs(w) for _, w in cols))
-
-    last_project = None
-    proj_input = proj_output = proj_read = proj_create = proj_reqs = 0
-    tot_input = tot_output = tot_read = tot_create = tot_reqs = 0
-
-    def flush_project():
-        nonlocal proj_input, proj_output, proj_read, proj_create, proj_reqs
-        if last_project is not None and proj_reqs and last_project != CLAUDE_DESKTOP_PROJECT:
-            vals = [("(subtotal)", "Project")]
-            if show_model:
-                vals.append(("", "Model"))
-            vals += [
-                (fmt(proj_reqs), "Reqs"),
-                (fmt(proj_input), "Input (base)"),
-                (fmt(proj_read), "Cache Read"),
-                (fmt(proj_create), "Cache Create"),
-                (fmt(proj_input + proj_read + proj_create), "Total Input"),
-                (fmt(proj_output), "Output Tokens"),
-            ]
-            print(_build_row(vals, cols_by_name))
-            print()
-        proj_input = proj_output = proj_read = proj_create = proj_reqs = 0
-
-    for r in rows:
-        if r["project"] != last_project:
-            flush_project()
-            last_project = r["project"]
-
-        vals = [
-            (r["project"], "Project"),
-        ]
-        if show_model:
-            vals.append((r.get("model", ""), "Model"))
-        vals += [
-            (fmt(r["requests"]), "Reqs"),
-            (fmt(r["input_tokens"]), "Input (base)"),
-            (fmt(r["cache_read"]), "Cache Read"),
-            (fmt(r["cache_create"]), "Cache Create"),
-            (fmt(r["input_tokens"] + r["cache_read"] + r["cache_create"]), "Total Input"),
-            (fmt(r["output_tokens"]), "Output Tokens"),
-        ]
-        if show_tags:
-            vals.append((_join(r["tags"]), "Tags"))
-        print(_build_row(vals, cols_by_name))
-
-        proj_input += r["input_tokens"]
-        proj_output += r["output_tokens"]
-        proj_read += r["cache_read"]
-        proj_create += r["cache_create"]
-        proj_reqs += r["requests"]
-
-        tot_input += r["input_tokens"]
-        tot_output += r["output_tokens"]
-        tot_read += r["cache_read"]
-        tot_create += r["cache_create"]
-        tot_reqs += r["requests"]
-
-    flush_project()
-
-    total_vals = [("TOTAL", "Project")]
-    if show_model:
-        total_vals.append(("", "Model"))
-    total_vals += [
-        (fmt(tot_reqs), "Reqs"),
-        (fmt(tot_input), "Input (base)"),
-        (fmt(tot_read), "Cache Read"),
-        (fmt(tot_create), "Cache Create"),
-        (fmt(tot_input + tot_read + tot_create), "Total Input"),
-        (fmt(tot_output), "Output Tokens"),
-    ]
-    print(_build_row(total_vals, cols_by_name))
-
-
-def csv_report(rows):
-    if not rows:
-        return
-
-    show_tags = any(r.get("tags") for r in rows)
-    show_model = any(r.get("model") for r in rows)
-    headers = ["Project"]
-    if show_model:
-        headers.append("Model")
-    headers += ["Reqs", "Input (base)", "Cache Read", "Cache Create", "Total Input", "Output Tokens"]
-    if show_tags:
-        headers.append("Tags")
-
-    writer = csv.writer(sys.stdout)
-    writer.writerow(headers)
-    for r in rows:
-        total_input = r["input_tokens"] + r["cache_read"] + r["cache_create"]
-        row = [r["project"]]
-        if show_model:
-            row.append(r.get("model", ""))
-        row += [r["requests"], r["input_tokens"],
-                r["cache_read"], r["cache_create"], total_input, r["output_tokens"]]
-        if show_tags:
-            row.append(" | ".join(r["tags"]) if r["tags"] else "")
-        writer.writerow(row)
-
-
-def _spinner(stop_event):
-    frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    for frame in itertools.cycle(frames):
-        if stop_event.is_set():
-            sys.stderr.write("\r\033[K")
-            sys.stderr.flush()
-            return
-        try:
-            sys.stderr.write(f"\r  {frame}  Reading usage data…")
-            sys.stderr.flush()
-        except (UnicodeEncodeError, OSError):
-            pass
-        time.sleep(0.08)
-
-
-def main():
-    params = parse_args()
-    from_date, to_date = resolve_window(params)
-
-    if params["add_tags"] or params["remove_tags"]:
-        n, files = retag(params["root"], from_date, to_date,
-                         params["tags"], params["add_tags"], params["remove_tags"])
-        print(f"Retagged {n} entr{'y' if n == 1 else 'ies'} across {files} file(s).")
-        return
-
-    # Show spinner while collecting data (only when stderr is a TTY)
-    stop = threading.Event()
-    if sys.stderr.isatty():
-        t = threading.Thread(target=_spinner, args=(stop,), daemon=True)
-        t.start()
-    else:
-        t = None
-
-    try:
-        entries = collect_entries(params["root"], from_date, to_date,
-                                  tag_filters=params["tags"], model_filters=params["models"])
-        rows = aggregate(entries)
-    finally:
-        stop.set()
-        if t is not None:
-            t.join()
-
-    if params["json"]:
-        output = {
-            "from": from_date.strftime("%Y-%m-%d") if from_date else None,
-            "to": (to_date - timedelta(days=1)).strftime("%Y-%m-%d") if params["to"] else None,
-            "rows": rows,
-        }
-        json.dump(output, sys.stdout, separators=(",", ":"))
-        print()
-    elif params["csv"]:
-        csv_report(rows)
-    else:
-        report(rows, from_date, to_date)
-
-
-if __name__ == "__main__":
-    main()
+  -h, --help            Show this message and exit.`;
+
+// ── Argument parsing ──────────────────────────────────────────────────────────
+
+function parseArgs() {
+  const args = process.argv.slice(2);
+
+  if (!args.length || args[0] === '-h' || args[0] === '--help') {
+    process.stdout.write(HELP + '\n');
+    process.exit(0);
+  }
+
+  const root = args[0];
+  const fs = require('fs');
+  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+    process.stderr.write(`Not a directory: ${root}\n`);
+    process.exit(1);
+  }
+
+  const params = {
+    root,
+    last: null,
+    from: null,
+    to: null,
+    today: false,
+    tags: [],
+    addTags: [],
+    removeTags: [],
+    models: [],
+    json: false,
+    csv: false,
+  };
+
+  let i = 1;
+  while (i < args.length) {
+    const arg = args[i];
+    if (arg === '-h' || arg === '--help') {
+      process.stdout.write(HELP + '\n');
+      process.exit(0);
+    } else if (arg === '--last' && i + 1 < args.length) {
+      const n = parseInt(args[++i], 10);
+      if (isNaN(n)) { process.stderr.write(`Invalid --last value: ${args[i]}\n`); process.exit(1); }
+      params.last = n; i++;
+    } else if (arg === '--from' && i + 1 < args.length) {
+      const val = args[++i];
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(val)) { process.stderr.write(`Invalid --from date (expected YYYY-MM-DD): ${val}\n`); process.exit(1); }
+      params.from = val; i++;
+    } else if (arg === '--to' && i + 1 < args.length) {
+      const val = args[++i];
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(val)) { process.stderr.write(`Invalid --to date (expected YYYY-MM-DD): ${val}\n`); process.exit(1); }
+      params.to = val; i++;
+    } else if (arg === '--today') {
+      params.today = true; i++;
+    } else if ((arg === '-t' || arg === '--tag') && i + 1 < args.length) {
+      const val = args[++i];
+      const isRegex = val.startsWith('/') && val.endsWith('/') && val.length > 2;
+      if (!isRegex && val.startsWith('+')) {
+        const tag = val.slice(1);
+        if (!tag) { process.stderr.write('error: -t/+ requires a tag name\n'); process.exit(1); }
+        params.addTags.push(tag);
+      } else if (!isRegex && val.startsWith('-')) {
+        const tag = val.slice(1);
+        if (!tag) { process.stderr.write('error: -t/- requires a tag name\n'); process.exit(1); }
+        params.removeTags.push(tag);
+      } else {
+        params.tags.push(val);
+      }
+      i++;
+    } else if (arg === '--model' && i + 1 < args.length) {
+      params.models.push(args[++i]); i++;
+    } else if (arg === '--json') {
+      params.json = true; i++;
+    } else if (arg === '--csv') {
+      params.csv = true; i++;
+    } else {
+      process.stderr.write(`Unknown argument: ${arg}\n`); process.exit(1);
+    }
+  }
+
+  if (params.today && (params.last !== null || params.from || params.to)) {
+    process.stderr.write('error: --today cannot be combined with --last, --from, or --to\n'); process.exit(1);
+  }
+  if (params.last !== null && (params.from || params.to)) {
+    process.stderr.write('error: --last cannot be combined with --from or --to\n'); process.exit(1);
+  }
+  if (params.json && params.csv) {
+    process.stderr.write('error: --json and --csv are mutually exclusive\n'); process.exit(1);
+  }
+  if ((params.addTags.length || params.removeTags.length) && (params.json || params.csv)) {
+    process.stderr.write('error: retagging (-t +/-) cannot be combined with --json or --csv\n'); process.exit(1);
+  }
+
+  return params;
+}
+
+// ── Time window ───────────────────────────────────────────────────────────────
+
+function resolveWindow(params) {
+  const now = new Date();
+
+  if (params.today) {
+    const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    return { fromDate: today, toDate: new Date(today.getTime() + 86400000) };
+  }
+
+  let toDate = null;
+  if (params.to) {
+    toDate = new Date(params.to + 'T00:00:00Z');
+    toDate.setUTCDate(toDate.getUTCDate() + 1); // exclusive upper bound
+  }
+
+  let fromDate = null;
+  if (params.from) {
+    fromDate = new Date(params.from + 'T00:00:00Z');
+    if (!toDate) toDate = now;
+  } else if (params.last !== null) {
+    fromDate = new Date(now.getTime() - params.last * 86400000);
+    if (!toDate) toDate = now;
+  }
+
+  return { fromDate, toDate };
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+function main() {
+  const params = parseArgs();
+  const { fromDate, toDate } = resolveWindow(params);
+
+  if (params.addTags.length || params.removeTags.length) {
+    const { modifiedEntries, modifiedFiles } = retag(
+      params.root, fromDate, toDate, params.tags, params.addTags, params.removeTags,
+    );
+    const noun = modifiedEntries === 1 ? 'entry' : 'entries';
+    process.stdout.write(`Retagged ${modifiedEntries} ${noun} across ${modifiedFiles} file(s).\n`);
+    return;
+  }
+
+  const entries = collectEntries(params.root, fromDate, toDate, params.tags, params.models);
+  const rows = aggregate(entries);
+
+  if (params.json) {
+    const output = {
+      from: fromDate ? fromDate.toISOString().slice(0, 10) : null,
+      to: params.to ? new Date(toDate.getTime() - 86400000).toISOString().slice(0, 10) : null,
+      rows,
+    };
+    process.stdout.write(JSON.stringify(output) + '\n');
+  } else if (params.csv) {
+    process.stdout.write(csvReport(rows));
+  } else {
+    report(rows, fromDate, toDate);
+  }
+}
+
+main();

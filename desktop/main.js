@@ -6,21 +6,24 @@ const {
 
 // Must be set before app is ready; the setter companion goes inside whenReady().
 app.commandLine.appendSwitch('disable-renderer-accessibility');
-const http = require('http');
-const https = require('https');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync, spawnSync, spawn } = require('child_process');
+const { execSync, spawn } = require('child_process');
 const crypto = require('crypto');
-const zlib = require('zlib');
+
+const {
+  DDBYA_DIR,
+  DEFAULT_UPSTREAM,
+  resolveIdentity,
+  TokenLogger,
+  buildProxy,
+} = require(path.join(__dirname, '..', 'proxy-core.js'));
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const DDBYA_DIR = '.ddbya.d';
 const USAGE_GLOB_RE = /^usage-.+\.ddbya$/;
-const DEFAULT_UPSTREAM = 'https://api.anthropic.com';
 const DEFAULT_PORT = 18723;
 
 // ── Settings ──────────────────────────────────────────────────────────────────
@@ -73,26 +76,6 @@ function saveState(updates) {
   return state;
 }
 
-// ── Identity ──────────────────────────────────────────────────────────────────
-
-function sanitiseIdentity(s) {
-  return (s || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'anonymous';
-}
-
-function resolveIdentity() {
-  try {
-    const email = execSync('git config --global user.email', { timeout: 3000 }).toString().trim();
-    if (email) return sanitiseIdentity(email);
-  } catch {}
-  const user = (() => { try { return os.userInfo().username; } catch { return ''; } })();
-  if (user) return sanitiseIdentity(user);
-  const state = loadState();
-  if (state.identity) return state.identity;
-  const id = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
-  saveState({ identity: id });
-  return id;
-}
-
 // ── Port management ───────────────────────────────────────────────────────────
 
 function isPortFree(port) {
@@ -115,241 +98,6 @@ async function acquirePort() {
   const port = srv.address().port;
   await new Promise(resolve => srv.close(resolve));
   return port;
-}
-
-// ── Token logger ──────────────────────────────────────────────────────────────
-
-class TokenLogger {
-  constructor(logPath) {
-    this.logPath = logPath;
-    fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    this.fd = fs.openSync(logPath, 'a');
-    this.closed = false;
-  }
-
-  log(entry) {
-    if (this.closed) return;
-    entry.timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
-    const sorted = Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b)));
-    fs.writeSync(this.fd, JSON.stringify(sorted) + '\n');
-  }
-
-  close() {
-    if (this.closed) return;
-    this.closed = true;
-    try { fs.closeSync(this.fd); } catch {}
-  }
-}
-
-// ── Reverse proxy ─────────────────────────────────────────────────────────────
-
-function stripCacheControl(obj) {
-  if (Array.isArray(obj)) return obj.map(stripCacheControl);
-  if (obj && typeof obj === 'object') {
-    const out = {};
-    for (const [k, v] of Object.entries(obj)) {
-      if (k === 'cache_control') continue;
-      out[k] = stripCacheControl(v);
-    }
-    return out;
-  }
-  return obj;
-}
-
-// optsRef is a plain object { disableBeta } that callers may mutate after
-// buildProxy returns — each incoming request reads it fresh, so changes take
-// effect immediately without restarting the server.
-function buildProxy(upstream, logger, tagsGetter, optsRef) {
-  const upUrl = new URL(upstream);
-  const isUpHttps = upUrl.protocol === 'https:';
-  const upBasePath = upUrl.pathname.replace(/\/$/, '');
-
-  function forwardRequest(req, res) {
-    const chunks = [];
-    req.on('error', () => res.destroy());
-    req.on('data', c => chunks.push(c));
-    req.on('end', () => {
-      let body = Buffer.concat(chunks);
-
-      let isStreaming = false;
-      try { isStreaming = !!JSON.parse(body).stream; } catch {}
-
-      const upHeaders = {};
-      for (const [k, v] of Object.entries(req.headers)) {
-        const low = k.toLowerCase();
-        if (['host', 'connection', 'proxy-connection'].includes(low)) continue;
-        upHeaders[k] = v;
-      }
-
-      // Strip ?beta query param from forwarded URL regardless of disableBeta
-      let forwardUrl = req.url;
-      if (optsRef.disableBeta) {
-        try {
-          const u = new URL(req.url, 'http://localhost');
-          u.searchParams.delete('beta');
-          forwardUrl = u.pathname + (u.search.length > 1 ? u.search : '');
-        } catch {}
-      }
-
-      if (optsRef.disableBeta && body.length > 0) {
-        try {
-          const parsed = JSON.parse(body.toString());
-          let obj = stripCacheControl(parsed);
-          // Bedrock requires system to be a plain string, not an array of blocks
-          if (Array.isArray(obj.system)) {
-            obj.system = obj.system
-              .filter(b => b && b.type === 'text')
-              .map(b => (typeof b.text === 'string' ? b.text : ''))
-              .join('\n\n');
-          }
-          body = Buffer.from(JSON.stringify(obj));
-          // Replace content-length (any case) with the new body size
-          for (const k of Object.keys(upHeaders)) {
-            if (k.toLowerCase() === 'content-length') delete upHeaders[k];
-          }
-          upHeaders['content-length'] = String(body.length);
-        } catch {}
-      }
-
-      // Remove anthropic-beta header entirely when beta features are disabled
-      if (optsRef.disableBeta) {
-        for (const k of Object.keys(upHeaders)) {
-          if (k.toLowerCase() === 'anthropic-beta') delete upHeaders[k];
-        }
-      }
-
-      const opts = {
-        hostname: upUrl.hostname,
-        port: upUrl.port || (isUpHttps ? 443 : 80),
-        path: upBasePath + forwardUrl,
-        method: req.method,
-        headers: upHeaders,
-        timeout: 300000,
-      };
-
-      const proto = isUpHttps ? https : http;
-      const upReq = proto.request(opts, upRes => {
-        const isGzip = (upRes.headers['content-encoding'] || '').toLowerCase() === 'gzip';
-
-        const resHeaders = {};
-        for (const [k, v] of Object.entries(upRes.headers)) {
-          const low = k.toLowerCase();
-          if (['transfer-encoding', 'connection', 'keep-alive'].includes(low)) continue;
-          if (low === 'content-encoding' && v.toLowerCase() === 'gzip') continue;
-          if (low === 'content-length' && (isGzip || isStreaming)) continue;
-          resHeaders[k] = v;
-        }
-        try { res.writeHead(upRes.statusCode, resHeaders); } catch { return; }
-
-        if (isStreaming) {
-          relayStream(upRes, res, isGzip, logger, tagsGetter);
-        } else {
-          const parts = [];
-          let stream = upRes;
-          if (isGzip) {
-            const gz = zlib.createGunzip();
-            upRes.pipe(gz);
-            stream = gz;
-          }
-          stream.on('data', c => parts.push(c));
-          stream.on('end', () => {
-            const respBody = Buffer.concat(parts);
-            try { res.end(respBody); } catch {}
-            extractUsageNonStream(respBody, logger, tagsGetter);
-          });
-          stream.on('error', () => { try { res.end(); } catch {} });
-        }
-      });
-
-      upReq.on('error', err => {
-        try { res.writeHead(502); res.end(`Bad Gateway: ${err.message}`); } catch {}
-      });
-      if (body.length) upReq.write(body);
-      upReq.end();
-    });
-  }
-
-  return http.createServer(forwardRequest);
-}
-
-function relayStream(upRes, res, isGzip, logger, tagsGetter) {
-  let best = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, model: '' };
-  let pending = Buffer.alloc(0);
-
-  function processLine(line) {
-    if (!line.startsWith('data: ')) return;
-    let ev;
-    try { ev = JSON.parse(line.slice(6)); } catch { return; }
-    const type = ev.type;
-    if (type === 'message_start') {
-      const u = (ev.message || {}).usage || {};
-      if (u.input_tokens > 0) best.input = u.input_tokens;
-      best.cacheRead = u.cache_read_input_tokens || 0;
-      best.cacheCreate = u.cache_creation_input_tokens || 0;
-      if (ev.message && ev.message.model) best.model = ev.message.model;
-    } else if (type === 'message_delta') {
-      const u = ev.usage || {};
-      if (u.output_tokens > 0) best.output = u.output_tokens;
-      if (ev.model) best.model = ev.model;
-    } else if (type === 'message_stop') {
-      const u = ev.usage || {};
-      if (u.input_tokens > 0) best.input = u.input_tokens;
-      if (u.output_tokens > 0) best.output = u.output_tokens;
-      if (ev.model) best.model = ev.model;
-    }
-  }
-
-  function handleChunk(chunk) {
-    pending = Buffer.concat([pending, chunk]);
-    let idx;
-    while ((idx = pending.indexOf('\n')) !== -1) {
-      const line = pending.slice(0, idx).toString('utf8').replace(/\r$/, '');
-      pending = pending.slice(idx + 1);
-      processLine(line);
-    }
-  }
-
-  let stream = upRes;
-  if (isGzip) {
-    const gz = zlib.createGunzip();
-    upRes.pipe(gz);
-    stream = gz;
-  }
-  stream.on('data', chunk => {
-    try { res.write(chunk); } catch {}
-    handleChunk(chunk);
-  });
-  stream.on('end', () => {
-    if (pending.length) processLine(pending.toString('utf8').replace(/\r$/, ''));
-    try { res.end(); } catch {}
-    if (best.input > 0 || best.output > 0) logEntry(best, true, logger, tagsGetter);
-  });
-  stream.on('error', () => { try { res.end(); } catch {}; });
-}
-
-function extractUsageNonStream(body, logger, tagsGetter) {
-  let data;
-  try { data = JSON.parse(body.toString()); } catch { return; }
-  const usage = data.usage;
-  if (!usage) return;
-  logEntry({
-    input: usage.input_tokens || 0,
-    output: usage.output_tokens || 0,
-    cacheRead: usage.cache_read_input_tokens || 0,
-    cacheCreate: usage.cache_creation_input_tokens || 0,
-    model: data.model || '',
-  }, false, logger, tagsGetter);
-}
-
-function logEntry(best, stream, logger, tagsGetter) {
-  const entry = { stream, input_tokens: best.input, output_tokens: best.output };
-  if (best.model) entry.model = best.model;
-  const tags = tagsGetter();
-  if (tags.length) entry.tags = [...tags];
-  if (best.cacheRead) entry.cache_read_input_tokens = best.cacheRead;
-  if (best.cacheCreate) entry.cache_creation_input_tokens = best.cacheCreate;
-  logger.log(entry);
-  addSessionTokens(best.input + best.output + best.cacheRead + best.cacheCreate);
 }
 
 // ── Past-tags collection ──────────────────────────────────────────────────────
@@ -454,11 +202,18 @@ function isClaudeDesktopRunning() {
   return false;
 }
 
-function killClaudeDesktop() {
+async function killClaudeDesktop() {
   try {
     if (isMac) execSync('pkill -x Claude', { timeout: 3000 });
-    if (isWin) execSync('taskkill /IM claude.exe /F', { shell: true, timeout: 3000 });
     if (isLinux) execSync('pkill -x claude-desktop', { timeout: 3000 });
+    if (isWin) {
+      // Graceful: send WM_CLOSE first, wait up to 3 s, then force
+      try { execSync('taskkill /IM claude.exe', { shell: true, timeout: 3000 }); } catch {}
+      await new Promise(r => setTimeout(r, 3000));
+      if (isClaudeDesktopRunning()) {
+        try { execSync('taskkill /IM claude.exe /F', { shell: true, timeout: 3000 }); } catch {}
+      }
+    }
   } catch {}
 }
 
@@ -484,7 +239,7 @@ async function launchClaudeDesktop(port) {
       cancelId: 1,
     });
     if (response !== 0) return;
-    killClaudeDesktop();
+    await killClaudeDesktop();
     await new Promise(r => setTimeout(r, 800));
   }
 
@@ -495,27 +250,27 @@ async function launchClaudeDesktop(port) {
 // ── Report export ─────────────────────────────────────────────────────────────
 
 function exportCsvReport(from, to) {
-  // In development __dirname = desktop/, so ../ddbya-report = repo root script.
-  // When packaged, electron-builder copies it to Contents/Resources/ddbya-report.
-  const scriptPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'ddbya-report')
-    : path.join(__dirname, '..', 'ddbya-report');
-  const cdFolder = path.join(APP_SUPPORT, 'Claude Desktop');
-  const args = [cdFolder, '--csv'];
-  if (from) { args.push('--from', from); }
-  if (to) { args.push('--to', to); }
+  const corePath = app.isPackaged
+    ? path.join(process.resourcesPath, 'report-core.js')
+    : path.join(__dirname, '..', 'report-core.js');
 
-  // Try python3 then python
-  for (const py of ['python3', 'python']) {
-    try {
-      const result = spawnSync(py, [scriptPath, ...args], { encoding: 'utf8', timeout: 30000 });
-      if (result.status === 0) return { ok: true, csv: result.stdout };
-      return { ok: false, error: result.stderr || `Exit code ${result.status}` };
-    } catch (err) {
-      if (err.code !== 'ENOENT') return { ok: false, error: err.message };
-    }
+  let core;
+  try { core = require(corePath); } catch (err) {
+    return { ok: false, error: `Could not load report-core.js: ${err.message}` };
   }
-  return { ok: false, error: 'Python 3 not found. Install Python 3 to export reports.' };
+
+  const root = path.join(APP_SUPPORT, 'Claude Desktop');
+  const fromDate = from ? new Date(from + 'T00:00:00Z') : null;
+  let toDate = to ? new Date(new Date(to + 'T00:00:00Z').getTime() + 86400000) : null;
+  if (fromDate && !toDate) toDate = new Date();
+
+  try {
+    const entries = core.collectEntries(root, fromDate, toDate);
+    const rows = core.aggregate(entries);
+    return { ok: true, csv: core.csvReport(rows) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 }
 
 // ── Renderer windows ──────────────────────────────────────────────────────────
@@ -699,7 +454,7 @@ ipcMain.handle('save-settings', async (_event, settings) => {
     proxySockets.clear();
     await new Promise(resolve => proxyServer.close(resolve));
     proxyOpts = { disableBeta: next.disableBeta };
-    proxyServer = buildProxy(next.upstreamBaseUrl, tokenLogger, () => currentTags, proxyOpts);
+    proxyServer = buildProxy(next.upstreamBaseUrl, tokenLogger, () => currentTags, proxyOpts, n => addSessionTokens(n));
     proxyServer.on('connection', s => { proxySockets.add(s); s.on('close', () => proxySockets.delete(s)); });
     await new Promise((resolve, reject) => {
       proxyServer.once('error', reject);
@@ -755,7 +510,10 @@ app.whenReady().then(async () => {
 
   // Set up token log
   fs.mkdirSync(CD_LOG_DIR, { recursive: true });
-  const identity = resolveIdentity();
+  const identity = resolveIdentity({
+    getStored: () => loadState().identity || null,
+    setStored: id => saveState({ identity: id }),
+  });
   const sessionId = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
   currentLogPath = path.join(CD_LOG_DIR, `usage-${identity}-${sessionId}.ddbya`);
   tokenLogger = new TokenLogger(currentLogPath);
@@ -779,7 +537,7 @@ app.whenReady().then(async () => {
   // Start proxy — use saved upstream base URL, not env var
   const { upstreamBaseUrl: upstream, disableBeta } = loadSettings();
   proxyOpts = { disableBeta };
-  proxyServer = buildProxy(upstream, tokenLogger, () => currentTags, proxyOpts);
+  proxyServer = buildProxy(upstream, tokenLogger, () => currentTags, proxyOpts, n => addSessionTokens(n));
   proxyServer.on('connection', s => { proxySockets.add(s); s.on('close', () => proxySockets.delete(s)); });
   try {
     await new Promise((resolve, reject) => {
@@ -811,7 +569,7 @@ app.whenReady().then(async () => {
       cancelId: 1,
     });
     if (response === 0) {
-      killClaudeDesktop();
+      await killClaudeDesktop();
       await new Promise(r => setTimeout(r, 800));
       const env = { ...process.env, ANTHROPIC_BASE_URL: `http://127.0.0.1:${currentPort}` };
       const claudePath = findClaudeDesktop();

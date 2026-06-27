@@ -11,8 +11,10 @@ files:
   - "!node_modules/.cache/**"
 
 extraResources:
-  - from: "../ddbya-report"
-    to: "ddbya-report"
+  - from: "../proxy-core.js"
+    to: "proxy-core.js"
+  - from: "../report-core.js"
+    to: "report-core.js"
 
 win:
   target:

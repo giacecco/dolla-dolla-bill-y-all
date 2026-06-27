@@ -1,43 +1,32 @@
-#!/usr/bin/env python3
-"""
-Reverse proxy wrapper for Claude Code that intercepts and logs token consumption.
-Zero dependencies — Python 3 standard library only.
+#!/usr/bin/env node
+'use strict';
 
-Usage:
-    ddbya [claude args...]
-    ddbya -t <tag> [claude args...]
+/**
+ * Reverse proxy wrapper for Claude Code that intercepts and logs token consumption.
+ * Zero npm dependencies — Node.js built-ins only.
+ *
+ * Usage:
+ *   ddbya [claude args...]
+ *   ddbya -t <tag> [claude args...]
+ */
 
-Options:
-    -t, --tag <tag>            Tag to label this session's consumption. Can be
-                                given multiple times. Tags are written into
-                                each .ddbya.d/usage-<identity>-<session>.ddbya entry.
-                                Default tags can be set via the DDBYA_TAGS env var
-                                (comma-separated); -t tags are appended to those.
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
+const { spawn } = require('child_process');
+const {
+  DDBYA_DIR,
+  USAGE_FILENAME_PREFIX,
+  DEFAULT_UPSTREAM,
+  resolveIdentity,
+  TokenLogger,
+  buildProxy,
+} = require(path.join(__dirname, 'proxy-core.js'));
 
-The proxy writes token usage to .ddbya.d/usage-<identity>-<session>.ddbya in
-the current directory and prints a summary to stderr when the session ends.
-"""
+const USAGE_GLOB_RE = /^usage-.+\.ddbya$/;
 
-import sys
-import os
-import gzip
-import zlib
-import json
-import threading
-import subprocess
-import http.server
-import http.client
-import urllib.parse
-import signal
-import uuid
-from datetime import datetime, timezone
-from pathlib import Path
-
-DDBYA_DIR = ".ddbya.d"
-USAGE_FILENAME_PREFIX = "usage-"
-USAGE_GLOB = "usage-*.ddbya"
-DEFAULT_UPSTREAM = "https://api.anthropic.com"
-_HELP = """\
+const HELP = `\
 Usage: ddbya [OPTIONS] [CLAUDE_ARGS...]
 
 Reverse proxy wrapper for Claude Code that intercepts and logs token consumption.
@@ -56,602 +45,224 @@ current directory. A summary is printed to stderr when the session ends.
 Examples:
   ddbya
   ddbya -t "client-acme" -t "code review"
-  ddbya --model claude-sonnet-4-6\
-"""
+  ddbya --model claude-sonnet-4-6`;
 
+// ── Argument parsing ──────────────────────────────────────────────────────────
 
-def parse_args(argv):
-    """Extract wrapper-specific flags, return (tags, list_tags, show_help, remaining_args_for_claude)."""
-    tags = []
-    list_tags = False
-    show_help = False
-    claude_args = []
-    i = 0
-    while i < len(argv):
-        arg = argv[i]
-        if arg in ("-h", "--help"):
-            show_help = True
-            i += 1
-            continue
-        elif arg in ("-t", "--tag"):
-            if i + 1 >= len(argv):
-                print("error: -t/--tag requires a value", file=sys.stderr)
-                sys.exit(1)
-            tags.append(argv[i + 1])
-            i += 2
-            continue
-        elif arg == "--list-tags":
-            list_tags = True
-            i += 1
-            continue
-        claude_args.append(arg)
-        i += 1
+function parseArgs(argv) {
+  const tags = [];
+  let listTags = false;
+  let showHelp = false;
+  const claudeArgs = [];
+  let i = 0;
+  while (i < argv.length) {
+    const arg = argv[i];
+    if (arg === '-h' || arg === '--help') {
+      showHelp = true; i++;
+    } else if (arg === '-t' || arg === '--tag') {
+      if (i + 1 >= argv.length) {
+        process.stderr.write('error: -t/--tag requires a value\n');
+        process.exit(1);
+      }
+      tags.push(argv[++i]); i++;
+    } else if (arg === '--list-tags') {
+      listTags = true; i++;
+    } else {
+      claudeArgs.push(arg); i++;
+    }
+  }
+  const envTags = (process.env.DDBYA_TAGS || '').split(',').map(t => t.trim()).filter(Boolean);
+  return { tags: [...envTags, ...tags], listTags, showHelp, claudeArgs };
+}
 
-    env_tags = [t.strip() for t in os.environ.get("DDBYA_TAGS", "").split(",") if t.strip()]
-    return env_tags + tags, list_tags, show_help, claude_args
+// ── Tag collection ────────────────────────────────────────────────────────────
 
+function claudeDesktopLogRoot() {
+  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'ddbya');
+  if (process.platform === 'win32') {
+    const appdata = process.env.APPDATA;
+    return appdata ? path.join(appdata, 'ddbya') : null;
+  }
+  const xdg = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+  return path.join(xdg, 'ddbya');
+}
 
-def _find_tag_root(start_dir):
-    """Walk up until we find a parent without a .ddbya.d/ directory, return that root."""
-    current = Path(start_dir).resolve()
-    while True:
-        parent = current.parent
-        if parent == current:
-            # Reached filesystem root
-            return current
-        if not (parent / DDBYA_DIR).is_dir():
-            return current
-        current = parent
+function collectTagsFromDir(rootDir) {
+  const tags = new Set();
 
+  function readJsonlFile(filePath) {
+    try {
+      const lines = fs.readFileSync(filePath, 'utf8').split('\n');
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (Array.isArray(entry.tags)) {
+            entry.tags.forEach(t => typeof t === 'string' && tags.add(t));
+          }
+        } catch {}
+      }
+    } catch {}
+  }
 
-def _collect_tags_from_dir(root_dir):
-    """Recursively collect tags from all usage-*.ddbya and legacy .token-usage.ddbya files under root_dir."""
-    tags = set()
-    root = Path(root_dir)
-    for pattern in (f"{DDBYA_DIR}/{USAGE_GLOB}", ".token-usage.ddbya"):
-        for log_file in root.rglob(pattern):
-            try:
-                with open(log_file, encoding="utf-8") as fh:
-                    for line in fh:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            entry = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        entry_tags = entry.get("tags", [])
-                        if isinstance(entry_tags, list):
-                            for t in entry_tags:
-                                if isinstance(t, str):
-                                    tags.add(t)
-            except OSError:
-                pass
-    return tags
-
-
-def _claude_desktop_log_root():
-    """Return the ddbya app-support root that holds Claude Desktop logs, or None."""
-    import re as _re
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "ddbya"
-    if sys.platform == "win32":
-        appdata = os.environ.get("APPDATA", "")
-        return Path(appdata) / "ddbya" if appdata else None
-    xdg = os.environ.get("XDG_DATA_HOME", "")
-    return Path(xdg) / "ddbya" if xdg else Path.home() / ".local" / "share" / "ddbya"
-
-
-def collect_tags(project_dir):
-    """Walk up to the nearest ancestor without a .ddbya.d/ directory, then collect all tags.
-    Also includes tags from Claude Desktop logs so the desktop app's tags appear in completions.
-    """
-    root = _find_tag_root(project_dir)
-    tags = _collect_tags_from_dir(root)
-    cd_root = _claude_desktop_log_root()
-    if cd_root and cd_root.is_dir():
-        tags.update(_collect_tags_from_dir(cd_root))
-    return sorted(tags)
-
-
-def _sanitise_identity(s):
-    """Lowercase s and replace runs of non-[a-z0-9._-] chars with a single '-'."""
-    import re as _re
-    s = s.lower()
-    s = _re.sub(r"[^a-z0-9._-]+", "-", s)
-    s = s.strip("-")
-    return s or "anonymous"
-
-
-def _resolve_identity():
-    """Return a sanitised identity string for the per-user log filename.
-
-    Resolution order:
-    1. git config user.email
-    2. $USER environment variable
-    3. UUID stored in ~/.config/ddbya/id (created on first call)
-    """
-    try:
-        result = subprocess.run(
-            ["git", "config", "--get", "user.email"],
-            capture_output=True, text=True, timeout=5,
-        )
-        email = result.stdout.strip()
-        if email:
-            return _sanitise_identity(email)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        pass
-
-    user = os.environ.get("USER", "").strip()
-    if user:
-        return _sanitise_identity(user)
-
-    id_path = Path.home() / ".config" / "ddbya" / "id"
-    try:
-        if id_path.exists():
-            stored = id_path.read_text(encoding="utf-8").strip()
-            if stored:
-                return _sanitise_identity(stored)
-        id_path.parent.mkdir(parents=True, exist_ok=True)
-        new_id = uuid.uuid4().hex[:12]
-        id_path.write_text(new_id + "\n", encoding="utf-8")
-        return new_id
-    except OSError:
-        return "anonymous"
-
-
-def _migrate_legacy_layout(project_dir, identity, session_id):
-    """Move legacy .token-usage.ddbya into .ddbya.d/ if present.
-
-    Idempotent: safe to call on every startup.
-    """
-    project_dir = Path(project_dir)
-    ddbya_dir = project_dir / DDBYA_DIR
-    ddbya_dir.mkdir(exist_ok=True)
-
-    legacy_usage = project_dir / ".token-usage.ddbya"
-    if legacy_usage.exists():
-        target = ddbya_dir / f"{USAGE_FILENAME_PREFIX}{identity}-{session_id}.ddbya"
-        legacy_usage.rename(target)
-        print(f"ddbya: migrated {legacy_usage.name} → {ddbya_dir.name}/{target.name}", file=sys.stderr)
-
-
-class TokenLogger:
-    """Writes token usage to a project-local JSONL file and tracks session totals."""
-
-    def __init__(self, log_path):
-        self._log_path = Path(log_path)
-        self._lock = threading.Lock()
-        self.session_entries = []
-        try:
-            self._file = open(self._log_path, "a", encoding="utf-8")
-        except OSError as exc:
-            print(f"error: cannot open token log {self._log_path}: {exc}", file=sys.stderr)
-            sys.exit(1)
-
-    def log(self, entry):
-        entry = {**entry, "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
-        with self._lock:
-            self.session_entries.append(entry)
-            self._file.write(json.dumps(entry, sort_keys=True) + "\n")
-            self._file.flush()
-
-    def close(self):
-        with self._lock:
-            if self._file is not None and not self._file.closed:
-                self._file.close()
-
-    def summary(self):
-        with self._lock:
-            entries = list(self.session_entries)
-        total_input = sum(e.get("input_tokens", 0) for e in entries)
-        total_output = sum(e.get("output_tokens", 0) for e in entries)
-        total_cache_read = sum(e.get("cache_read_input_tokens", 0) for e in entries)
-        total_cache_create = sum(e.get("cache_creation_input_tokens", 0) for e in entries)
-        return total_input, total_output, total_cache_read, total_cache_create, len(entries)
-
-
-class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
-    """Handles incoming requests by forwarding them to the upstream Anthropic API."""
-
-    # Set by ReverseProxy at server creation time
-    upstream_scheme = "https"
-    upstream_netloc = "api.anthropic.com"
-    upstream_base_path = ""
-    token_logger = None
-    tags = None
-
-    # Suppress http.server's default request logging
-    def log_message(self, format, *args):
-        pass
-
-    def _log_token_usage(self, stream, input_tokens, output_tokens,
-                          cache_read=0, cache_create=0, model=""):
-        entry = {
-            "stream": stream,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
+  function walk(dir) {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === DDBYA_DIR) {
+          let files;
+          try { files = fs.readdirSync(full); } catch { continue; }
+          for (const f of files) {
+            if (USAGE_GLOB_RE.test(f)) readJsonlFile(path.join(full, f));
+          }
+        } else {
+          walk(full);
         }
-        if model:
-            entry["model"] = model
-        if self.tags:
-            entry["tags"] = list(self.tags)
-        if cache_read:
-            entry["cache_read_input_tokens"] = cache_read
-        if cache_create:
-            entry["cache_creation_input_tokens"] = cache_create
-        self.token_logger.log(entry)
+      } else if (entry.name === '.token-usage.ddbya') {
+        readJsonlFile(full);
+      }
+    }
+  }
+  walk(rootDir);
+  return tags;
+}
 
-    def _do_forward(self, method):
-        # Read the request body. Only Content-Length bodies are supported;
-        # chunked transfer-encoding requests carry no Content-Length and would
-        # forward an empty body. Claude Code does not send chunked requests.
-        content_length = int(self.headers.get("Content-Length", 0))
-        req_body = self.rfile.read(content_length) if content_length else b""
+function findTagRoot(startDir) {
+  let current = path.resolve(startDir);
+  while (true) {
+    const parent = path.dirname(current);
+    if (parent === current) return current;
+    if (!fs.existsSync(path.join(parent, DDBYA_DIR))) return current;
+    current = parent;
+  }
+}
 
-        parsed_req = urllib.parse.urlparse(self.path)
-        req_path = parsed_req.path
-        req_query = parsed_req.query
-        active_scheme = self.upstream_scheme
-        active_netloc = self.upstream_netloc
-        if self.upstream_base_path:
-            req_path = self.upstream_base_path + req_path
+function collectTags(projectDir) {
+  const root = findTagRoot(projectDir);
+  const tags = collectTagsFromDir(root);
+  const cdRoot = claudeDesktopLogRoot();
+  if (cdRoot && fs.existsSync(cdRoot)) {
+    collectTagsFromDir(cdRoot).forEach(t => tags.add(t));
+  }
+  return [...tags].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+}
 
-        request_target = (req_path + "?" + req_query) if req_query else req_path
+// ── Legacy migration ──────────────────────────────────────────────────────────
 
-        # Forward to upstream
-        if active_scheme == "https":
-            conn = http.client.HTTPSConnection(active_netloc, timeout=300)
-        else:
-            conn = http.client.HTTPConnection(active_netloc, timeout=300)
+function migrateLegacyLayout(projectDir, identity, sessionId) {
+  const ddbyaDir = path.join(projectDir, DDBYA_DIR);
+  fs.mkdirSync(ddbyaDir, { recursive: true });
+  const legacy = path.join(projectDir, '.token-usage.ddbya');
+  if (fs.existsSync(legacy)) {
+    const targetName = `${USAGE_FILENAME_PREFIX}${identity}-${sessionId}.ddbya`;
+    const target = path.join(ddbyaDir, targetName);
+    fs.renameSync(legacy, target);
+    process.stderr.write(`ddbya: migrated .token-usage.ddbya → .ddbya.d/${targetName}\n`);
+  }
+}
 
-        upstream_headers = {}
-        for key, value in self.headers.items():
-            low = key.lower()
-            if low not in ("host", "connection", "proxy-connection"):
-                upstream_headers[key] = value
+// ── Session summary ───────────────────────────────────────────────────────────
 
-        try:
-            try:
-                conn.request(method, request_target, body=req_body, headers=upstream_headers)
-                resp = conn.getresponse()
-            except OSError as exc:
-                try:
-                    self.send_error(502, f"Bad Gateway: {exc}")
-                except (BrokenPipeError, ConnectionResetError):
-                    self.close_connection = True
-                return
+function formatSummary(input, output, cacheRead, cacheCreate, count) {
+  const total = input + output + cacheRead + cacheCreate;
+  const lines = [
+    '\nSession token usage:',
+    `  Requests:     ${count}`,
+    `  Input:        ${input.toLocaleString('en-US')} tokens`,
+    `  Output:       ${output.toLocaleString('en-US')} tokens`,
+  ];
+  if (cacheRead) lines.push(`  Cache read:   ${cacheRead.toLocaleString('en-US')} tokens`);
+  if (cacheCreate) lines.push(`  Cache write:  ${cacheCreate.toLocaleString('en-US')} tokens`);
+  lines.push(`  Total:        ${total.toLocaleString('en-US')} tokens`);
+  return lines.join('\n');
+}
 
-            is_gzip = resp.getheader("Content-Encoding", "").lower() == "gzip"
+// ── Main ──────────────────────────────────────────────────────────────────────
 
-            # Parse request body once; reuse parsed form downstream.
-            req_data = {}
-            if req_body:
-                try:
-                    req_data = json.loads(req_body)
-                except json.JSONDecodeError:
-                    pass
-            is_streaming = req_data.get("stream", False)
+async function main() {
+  const { tags, listTags, showHelp, claudeArgs } = parseArgs(process.argv.slice(2));
 
-            # Relay response status and headers. Never forward
-            # Content-Encoding: gzip — the proxy handles decompression
-            # and the client should not try to decompress twice.
-            #
-            # The client (claude) may have already closed its socket while we
-            # were waiting on upstream — typically because the user cancelled
-            # the in-flight request from the TUI. The header flush would then
-            # raise BrokenPipeError out of end_headers(). Catch that and keep
-            # going so we still drain upstream and log usage for tokens the
-            # user already paid for.
-            client_alive = True
-            try:
-                self.send_response(resp.status, resp.reason)
-                for key, value in resp.getheaders():
-                    low = key.lower()
-                    if low in ("transfer-encoding", "connection", "keep-alive"):
-                        continue
-                    if low == "content-encoding" and value.lower() == "gzip":
-                        continue
-                    # Drop Content-Length when we will not deliver the exact same
-                    # byte count: gzip is decompressed by us, and streaming responses
-                    # are relayed chunk-by-chunk so the original length no longer
-                    # matches what the client receives.
-                    if low == "content-length" and (is_gzip or is_streaming):
-                        continue
-                    self.send_header(key, value)
-                self.end_headers()
-            except (BrokenPipeError, ConnectionResetError):
-                client_alive = False
-                self.close_connection = True
+  if (showHelp) {
+    process.stdout.write(HELP + '\n');
+    process.exit(0);
+  }
 
-            if is_streaming:
-                self._relay_stream(resp, req_data, is_gzip, client_alive=client_alive)
-            else:
-                resp_body = resp.read()
-                if is_gzip and resp_body:
-                    try:
-                        resp_body = gzip.decompress(resp_body)
-                    except (OSError, EOFError):
-                        # Upstream advertised gzip but sent something we can't
-                        # decode (truncated, empty, mislabelled). Pass the
-                        # bytes through unchanged so the client sees the same
-                        # error the upstream sent.
-                        pass
-                if client_alive:
-                    try:
-                        self.wfile.write(resp_body)
-                    except (BrokenPipeError, ConnectionResetError):
-                        self.close_connection = True
-                self._extract_usage_nonstream(resp_body)
-        finally:
-            conn.close()
+  if (listTags) {
+    for (const tag of collectTags(process.cwd())) {
+      process.stdout.write(tag + '\n');
+    }
+    process.exit(0);
+  }
 
-    def _relay_stream(self, resp, req_data, is_gzip, client_alive=True):
-        """Relay SSE events chunk by chunk, parsing usage inline without buffering the full body.
+  const upstream = process.env.ANTHROPIC_BASE_URL || DEFAULT_UPSTREAM;
+  const identity = resolveIdentity();
+  const sessionId = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+  const projectDir = process.cwd();
 
-        client_alive starts False when the response headers couldn't be
-        delivered (client dropped during the upstream wait). In that case we
-        still drain upstream and parse usage so the session log stays correct.
-        """
-        if is_gzip:
-            decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
+  migrateLegacyLayout(projectDir, identity, sessionId);
 
-        best_input = best_output = cache_read = cache_create = 0
-        best_model = ""
+  const logPath = path.join(projectDir, DDBYA_DIR, `${USAGE_FILENAME_PREFIX}${identity}-${sessionId}.ddbya`);
+  const logger = new TokenLogger(logPath);
+  const server = buildProxy(upstream, logger, () => tags, {});
 
-        def process_line(text):
-            nonlocal best_input, best_output, cache_read, cache_create, best_model
-            if not text.startswith("data: "):
-                return
-            try:
-                event = json.loads(text[6:])
-            except json.JSONDecodeError:
-                return
-            event_type = event.get("type", "")
-            if event_type == "message_start":
-                msg = event.get("message", {})
-                usage = msg.get("usage", {})
-                if usage.get("input_tokens", 0) > 0:
-                    best_input = usage["input_tokens"]
-                cache_read = usage.get("cache_read_input_tokens", 0)
-                cache_create = usage.get("cache_creation_input_tokens", 0)
-                if msg.get("model"):
-                    best_model = msg["model"]
-            elif event_type == "message_delta":
-                usage = event.get("usage", {})
-                if usage.get("output_tokens", 0) > 0:
-                    best_output = usage["output_tokens"]
-                if event.get("model"):
-                    best_model = event["model"]
-            elif event_type == "message_stop":
-                usage = event.get("usage", {})
-                if usage:
-                    if usage.get("input_tokens", 0) > 0:
-                        best_input = usage["input_tokens"]
-                    if usage.get("output_tokens", 0) > 0:
-                        best_output = usage["output_tokens"]
-                if event.get("model"):
-                    best_model = event["model"]
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
 
-        # Track whether the client is still reading. A disconnect mid-stream
-        # should not crash the handler; keep parsing usage from upstream so the
-        # session totals are still logged. (Caller may already have flipped this
-        # to False if header delivery failed before we got here.)
-        pending_chunks = []
-        while True:
-            try:
-                chunk = resp.read(4096)
-            except http.client.IncompleteRead as exc:
-                chunk = exc.partial
-            if not chunk:
-                break
-            if is_gzip:
-                chunk = decompressor.decompress(chunk)
-            if client_alive:
-                try:
-                    self.wfile.write(chunk)
-                    self.wfile.flush()
-                except OSError:
-                    client_alive = False
-            pending_chunks.append(chunk)
-            if b"\n" in chunk:
-                pending = b"".join(pending_chunks)
-                pending_chunks = []
-                while b"\n" in pending:
-                    raw_line, pending = pending.split(b"\n", 1)
-                    process_line(raw_line.decode("utf-8", errors="replace").rstrip("\r"))
-                if pending:
-                    pending_chunks = [pending]
+  const port = server.address().port;
+  const env = { ...process.env, ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}` };
 
-        if is_gzip:
-            tail = decompressor.flush()
-            if tail:
-                if client_alive:
-                    try:
-                        self.wfile.write(tail)
-                        self.wfile.flush()
-                    except OSError:
-                        client_alive = False
-                pending_chunks.append(tail)
+  // Prevent Node.js from exiting on SIGINT — the terminal sends it to the whole
+  // process group, so claude receives it directly and handles its own shutdown.
+  // We wait for claude to close before cleaning up.
+  process.on('SIGINT', () => {});
+  process.on('SIGTERM', () => { if (child) child.kill('SIGTERM'); });
 
-        if pending_chunks:
-            pending = b"".join(pending_chunks)
-            while b"\n" in pending:
-                raw_line, pending = pending.split(b"\n", 1)
-                process_line(raw_line.decode("utf-8", errors="replace").rstrip("\r"))
-            if pending:
-                process_line(pending.decode("utf-8", errors="replace").rstrip("\r"))
+  let child;
+  try {
+    child = spawn('claude', claudeArgs, { env, stdio: 'inherit' });
+  } catch (err) {
+    server.close();
+    logger.close();
+    if (err.code === 'ENOENT') {
+      process.stderr.write(
+        "error: 'claude' executable not found on PATH. " +
+        'Install Claude Code (https://claude.ai/claude-code) and try again.\n',
+      );
+      process.exit(127);
+    }
+    throw err;
+  }
 
-        if best_input > 0 or best_output > 0:
-            self._log_token_usage(
-                stream=True,
-                input_tokens=best_input,
-                output_tokens=best_output,
-                cache_read=cache_read,
-                cache_create=cache_create,
-                model=best_model,
-            )
+  child.on('error', err => {
+    server.close();
+    logger.close();
+    if (err.code === 'ENOENT') {
+      process.stderr.write(
+        "error: 'claude' executable not found on PATH. " +
+        'Install Claude Code (https://claude.ai/claude-code) and try again.\n',
+      );
+      process.exit(127);
+    }
+    process.stderr.write(`error: ${err.message}\n`);
+    process.exit(1);
+  });
 
-    def _extract_usage_nonstream(self, resp_body):
-        try:
-            data = json.loads(resp_body)
-            usage = data.get("usage")
-            if not usage:
-                return
-            self._log_token_usage(
-                stream=False,
-                input_tokens=usage.get("input_tokens", 0),
-                output_tokens=usage.get("output_tokens", 0),
-                cache_read=usage.get("cache_read_input_tokens", 0),
-                cache_create=usage.get("cache_creation_input_tokens", 0),
-                model=data.get("model", ""),
-            )
-        except json.JSONDecodeError:
-            pass
+  child.on('close', code => {
+    server.close();
+    logger.close();
+    const { input, output, cacheRead, cacheCreate, count } = logger.summary();
+    if (count > 0) {
+      process.stderr.write(formatSummary(input, output, cacheRead, cacheCreate, count) + '\n');
+    }
+    process.exit(code != null ? code : 0);
+  });
+}
 
-    # Dispatch every HTTP method to the forwarder
-    def do_GET(self): self._do_forward("GET")
-    def do_POST(self): self._do_forward("POST")
-    def do_PUT(self): self._do_forward("PUT")
-    def do_DELETE(self): self._do_forward("DELETE")
-    def do_PATCH(self): self._do_forward("PATCH")
-    def do_OPTIONS(self): self._do_forward("OPTIONS")
-    def do_HEAD(self): self._do_forward("HEAD")
-
-
-class ReverseProxy:
-    """Manages the lifecycle of the reverse proxy HTTP server."""
-
-    def __init__(self, upstream_url, log_path, tags=None):
-        parsed = urllib.parse.urlparse(upstream_url)
-        if parsed.scheme and parsed.netloc:
-            self.upstream_scheme = parsed.scheme
-            self.upstream_netloc = parsed.netloc
-            self.upstream_base_path = parsed.path.rstrip("/")
-        else:
-            default = urllib.parse.urlparse(DEFAULT_UPSTREAM)
-            self.upstream_scheme = default.scheme
-            self.upstream_netloc = default.netloc
-            self.upstream_base_path = default.path.rstrip("/")
-
-        self.tags = tags or []
-        self.token_logger = TokenLogger(log_path)
-        self._server = None
-        self._thread = None
-
-    @property
-    def port(self):
-        return self._server.server_address[1] if self._server else None
-
-    def start(self):
-        # Bind to port 0 to let the OS pick a free port
-        handler = self._build_handler()
-        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        if self._server:
-            self._server.shutdown()
-            self._server.server_close()
-
-    def _build_handler(self):
-        # http.server instantiates handlers with no constructor args, so
-        # dependencies are injected via class attributes on a fresh subclass.
-        proxy = self
-
-        class BoundHandler(ReverseProxyHandler):
-            pass
-
-        BoundHandler.token_logger = proxy.token_logger
-        BoundHandler.upstream_scheme = proxy.upstream_scheme
-        BoundHandler.upstream_netloc = proxy.upstream_netloc
-        BoundHandler.upstream_base_path = proxy.upstream_base_path
-        BoundHandler.tags = proxy.tags
-        return BoundHandler
-
-
-def format_summary(input_tokens, output_tokens, cache_read, cache_create, request_count):
-    lines = [
-        "\nSession token usage:",
-        f"  Requests:     {request_count}",
-        f"  Input:        {input_tokens:,} tokens",
-        f"  Output:       {output_tokens:,} tokens",
-    ]
-    if cache_read:
-        lines.append(f"  Cache read:   {cache_read:,} tokens")
-    if cache_create:
-        lines.append(f"  Cache write:  {cache_create:,} tokens")
-    total = input_tokens + output_tokens + cache_read + cache_create
-    lines.append(f"  Total:        {total:,} tokens")
-    return "\n".join(lines)
-
-
-def main():
-    tags, list_tags, show_help, claude_args = parse_args(sys.argv[1:])
-
-    if show_help:
-        print(_HELP)
-        sys.exit(0)
-
-    if list_tags:
-        for tag in collect_tags(Path.cwd()):
-            print(tag)
-        sys.exit(0)
-
-    upstream = os.environ.get("ANTHROPIC_BASE_URL", DEFAULT_UPSTREAM)
-
-    # Resolve the per-user identity and migrate any legacy layout before any
-    # logging operations so all paths are in the right place.
-    identity = _resolve_identity()
-    session_id = uuid.uuid4().hex[:8]
-    _migrate_legacy_layout(Path.cwd(), identity, session_id)
-
-    log_path = Path.cwd() / DDBYA_DIR / f"{USAGE_FILENAME_PREFIX}{identity}-{session_id}.ddbya"
-    proxy = ReverseProxy(upstream, log_path, tags=tags)
-    proxy.start()
-
-    env = os.environ.copy()
-    proxy_base = f"http://127.0.0.1:{proxy.port}"
-    env["ANTHROPIC_BASE_URL"] = proxy_base
-
-    # Restore default SIGINT behaviour so Ctrl+C is forwarded to claude naturally.
-    # Python installs its own SIGINT handler that raises KeyboardInterrupt;
-    # restoring SIG_DFL lets the claude subprocess receive the signal directly.
-    original_sigint = signal.signal(signal.SIGINT, signal.SIG_DFL)
-
-    try:
-        proc = subprocess.Popen(
-            ["claude"] + claude_args,
-            env=env,
-            stdin=sys.stdin,
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-        )
-    except FileNotFoundError:
-        signal.signal(signal.SIGINT, original_sigint)
-        proxy.stop()
-        proxy.token_logger.close()
-        print(
-            "error: 'claude' executable not found on PATH. "
-            "Install Claude Code (https://claude.com/claude-code) and try again.",
-            file=sys.stderr,
-        )
-        sys.exit(127)
-
-    try:
-        exit_code = proc.wait()
-    finally:
-        signal.signal(signal.SIGINT, original_sigint)
-        proxy.stop()
-        proxy.token_logger.close()
-
-    input_tokens, output_tokens, cache_read, cache_create, request_count = proxy.token_logger.summary()
-    if request_count > 0:
-        print(format_summary(input_tokens, output_tokens, cache_read, cache_create, request_count), file=sys.stderr)
-
-    sys.exit(exit_code)
-
-
-if __name__ == "__main__":
-    main()
+main().catch(err => {
+  process.stderr.write(`error: ${err.message}\n`);
+  process.exit(1);
+});

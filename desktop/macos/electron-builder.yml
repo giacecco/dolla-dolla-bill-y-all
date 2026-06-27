@@ -11,8 +11,10 @@ files:
   - "!node_modules/.cache/**"
 
 extraResources:
-  - from: "../ddbya-report"
-    to: "ddbya-report"
+  - from: "../proxy-core.js"
+    to: "proxy-core.js"
+  - from: "../report-core.js"
+    to: "report-core.js"
 
 # Signing is handled by macos/sign.js (custom script) because macOS Spotlight
 # re-adds com.apple.FinderInfo to .app directories between afterPack and the

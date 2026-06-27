@@ -2,24 +2,39 @@
 
 ## Project
 
-A zero-dependency Python 3 reverse proxy that wraps Claude Code to intercept and log API token usage. Single file: `ddbya`. Reporting script: `ddbya-report`. Desktop tray app (Electron): `desktop/`.
+A Node.js reverse proxy that wraps Claude Code to intercept and log API token usage. CLI: `ddbya`. Reporting script: `ddbya-report`. Desktop tray app (Electron): `desktop/`.
+
+Shared modules (zero npm dependencies — Node.js built-ins only):
+- `proxy-core.js` — reverse proxy, token logging, identity resolution. Used by `ddbya` and `desktop/main.js`.
+- `report-core.js` — entry discovery, aggregation, table/CSV formatting, retagging. Used by `ddbya-report` and imported directly by `desktop/main.js` for CSV export (no Python subprocess).
 
 ## Platform support
 
-All components — `ddbya`, `ddbya-report`, and `desktop/` — must work correctly on Windows, macOS, and Linux. Use `pathlib.Path` for all file paths, `platform.system()` for any OS-specific branches, and avoid shell-isms that don't work on Windows (e.g. no bare `rm`, `cp`, or POSIX-only subprocess calls).
+All components — `ddbya`, `ddbya-report`, and `desktop/` — must work correctly on Windows, macOS, and Linux. Use `path` from Node.js for all file paths, `process.platform` for any OS-specific branches, and avoid shell-isms that don't work on Windows.
 
 ## Architecture
 
-- `TokenLogger` — thread-safe JSONL writer with in-memory session tracking. Writes to `.ddbya.d/usage-<identity>-<session>.ddbya` (see Identity & layout).
-- `ReverseProxyHandler` — `http.server.BaseHTTPRequestHandler` subclass. Forwards any HTTP method to the upstream, relays streaming (SSE) and non-streaming responses chunk-by-chunk, and extracts `usage` from the response.
-- `ReverseProxy` — manages the `ThreadingHTTPServer` lifecycle. Binds to port 0 for auto-selection, passes upstream scheme/netloc/base-path, tags, and `log_path` to the handler via class attributes. The upstream URL's path component is preserved as `upstream_base_path` and prepended to every forwarded request — required for any endpoint whose Anthropic-compatible API lives under a non-root path.
-- `parse_args()` — extracts `-t`/`--tag`, `--list-tags`, and `-h`/`--help` from argv. Merges `DDBYA_TAGS` env var (comma-separated) with `-t` flags. Returns `(tags, list_tags, show_help, claude_args)`. `-t`/`--tag` can be given multiple times.
-- `collect_tags()` — scans `.ddbya.d/usage-*.ddbya` in the current project and sibling directories, **plus the Claude Desktop log root** (`~/Library/Application Support/ddbya/` on macOS), returning all unique tags found. Used by `--list-tags` for shell tab completion of `-t`/`--tag` values.
-- `_claude_desktop_log_root()` — returns the platform-specific ddbya app-support root that holds Claude Desktop logs.
-- `_sanitise_identity(s)` — lowercases s and collapses runs of non-`[a-z0-9._-]` chars to a single `-`. Returns `"anonymous"` if the result is empty.
-- `_resolve_identity()` — determines the per-user identity string used in log filenames. Resolution order: `git config user.email` → `$USER` → UUID stored in `~/.config/ddbya/id` (generated on first call if absent).
-- `_migrate_legacy_layout(project_dir, identity)` — idempotent startup migration. Moves `.token-usage.ddbya` → `.ddbya.d/usage-<identity>-<session>.ddbya` if the legacy file exists at the project root. Prints one line to stderr if moved.
-- `main()` — parses args, resolves identity and calls `_migrate_legacy_layout`, configures upstream from `ANTHROPIC_BASE_URL` (or default), starts proxy. If `--help` is given, prints help and exits. If `--list-tags` is given, prints collected tags and exits. Sets `ANTHROPIC_BASE_URL` to the proxy URL. Runs `claude` via `subprocess.Popen` with inherited stdio. Prints session summary to stderr on exit.
+### proxy-core.js
+
+- `TokenLogger` — JSONL writer with in-memory session tracking. Writes to `.ddbya.d/usage-<identity>-<session>.ddbya`. `summary()` returns totals for the session.
+- `buildProxy(upstream, logger, tagsGetter, optsRef, onTokens)` — creates an `http.Server` that forwards all methods to the upstream, relays streaming (SSE) and non-streaming responses, and extracts `usage` from each response. `optsRef.disableBeta` may be mutated after creation for live effect. `onTokens(n)` is an optional callback fired after each logged entry (used by the desktop tray counter).
+- `resolveIdentity(opts)` — determines the per-user identity string. Resolution order: `git config --global user.email` → `os.userInfo().username` → UUID stored via `opts.getStored`/`opts.setStored` (default: `~/.config/ddbya/id`).
+- `sanitiseIdentity(s)` — lowercases s and collapses runs of non-`[a-z0-9._-]` chars to a single `-`. Returns `"anonymous"` if the result is empty.
+
+### ddbya (CLI wrapper)
+
+- `parseArgs(argv)` — extracts `-t`/`--tag`, `--list-tags`, and `-h`/`--help` from argv. Merges `DDBYA_TAGS` env var (comma-separated) with `-t` flags.
+- `collectTags(projectDir)` — scans `.ddbya.d/usage-*.ddbya` in the current project and sibling directories, **plus the Claude Desktop log root**, returning all unique tags sorted. Used by `--list-tags` for shell tab completion.
+- `migrateLegacyLayout(projectDir, identity, sessionId)` — idempotent startup migration. Moves `.token-usage.ddbya` → `.ddbya.d/usage-<identity>-<session>.ddbya` if the legacy file exists.
+- `main()` — parses args, resolves identity, runs migration, starts proxy on a random port, spawns `claude` with `ANTHROPIC_BASE_URL` pointing at the proxy, prints session summary to stderr on exit.
+
+### report-core.js
+
+- `collectEntries(root, fromDate, toDate, tagFilters, modelFilters)` — discovers all `.ddbya.d/usage-*.ddbya` files under root (or in root directly), plus Claude Desktop logs, and returns filtered entry records.
+- `aggregate(entries)` — groups by `(project, model, tags)` and sums token counts.
+- `report(rows, fromDate, toDate)` — prints a formatted table to stdout.
+- `csvReport(rows)` — returns a CSV string.
+- `retag(root, fromDate, toDate, tagFilters, addTags, removeTags)` — modifies tags in `.ddbya.d/usage-*.ddbya` files in-place (atomic write via temp file + rename).
 
 ## Token extraction
 
@@ -32,7 +47,7 @@ All components — `ddbya`, `ddbya-report`, and `desktop/` — must work correct
 
 ## No dependencies
 
-`ddbya` and `ddbya-report` use only Python 3 standard library: `http.server`, `http.client`, `urllib.parse`, `json`, `threading`, `subprocess`, `pathlib`, `signal`, `gzip`, `zlib`, `uuid`, `itertools`, `time`.
+`ddbya`, `ddbya-report`, `proxy-core.js`, and `report-core.js` use only Node.js built-in modules: `http`, `https`, `fs`, `path`, `os`, `crypto`, `zlib`, `child_process`, `net`. No npm install required.
 
 ## Identity & layout
 
@@ -46,7 +61,7 @@ Each project stores all ddbya state in a `.ddbya.d/` subdirectory:
     usage-bob-example.com-9c8b5e3a.ddbya   ← Bob's token log
 ```
 
-Per-session filenames use the pattern `usage-<identity>-<session>.ddbya`, where `<session>` is an 8-character random hex string (`uuid.uuid4().hex[:8]`) generated at startup. Each invocation of `ddbya` creates its own file, so parallel sessions from the same user never share a write target. Identity is resolved at startup via `_resolve_identity()`: `git config user.email` → `$USER` → UUID stored in `~/.config/ddbya/id`. The identity is sanitised to lowercase `[a-z0-9._-]` (any other character collapsed to `-`).
+Per-session filenames use the pattern `usage-<identity>-<session>.ddbya`, where `<session>` is an 8-character random hex string (`crypto.randomUUID().slice(0,8)`) generated at startup. Each invocation of `ddbya` creates its own file, so parallel sessions from the same user never share a write target. Identity is resolved at startup via `resolveIdentity()`: `git config --global user.email` → `os.userInfo().username` → UUID stored in `~/.config/ddbya/id`. The identity is sanitised to lowercase `[a-z0-9._-]` (any other character collapsed to `-`).
 
 **Migration:** if a legacy `.token-usage.ddbya` exists at the project root, `_migrate_legacy_layout()` renames it into `.ddbya.d/` on the first ddbya run after the upgrade, attributed to the current user.
 
