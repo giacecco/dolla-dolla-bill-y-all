@@ -15,7 +15,7 @@
     user-select: none;
   }
   h2 { font-size: 15px; font-weight: 600; margin-bottom: 18px; }
-  .field { margin-bottom: 14px; }
+
   label { display: block; font-weight: 500; margin-bottom: 4px; color: #444; }
   input[type="text"] {
     width: 100%;
@@ -28,42 +28,49 @@
     color: #1a1a1a;
     user-select: text;
   }
-  input[type="text"]:focus { outline: none; border-color: #4a90e2; box-shadow: 0 0 0 2px rgba(74,144,226,0.2); }
+  input[type="text"]:focus { outline: none; border-color: #4a90e2; box-shadow: 0 0 0 2px rgba(74,144,226,.2); }
   .hint { font-size: 11px; color: #888; margin-top: 4px; }
+
   hr { border: none; border-top: 1px solid #ddd; margin: 18px 0; }
-  .instructions {
+
+  .box {
     background: #fff;
     border: 1px solid #ddd;
     border-radius: 8px;
-    padding: 14px;
+    padding: 14px 16px;
   }
-  .instructions h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
-  .instructions p { color: #555; margin-bottom: 8px; line-height: 1.5; }
-  .kv { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-  .kv .key { font-weight: 500; color: #444; min-width: 110px; flex-shrink: 0; }
-  .proxy-row { display: flex; gap: 6px; align-items: center; }
-  .proxy-val {
+  .box h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+  .box p { color: #555; line-height: 1.5; margin-bottom: 10px; }
+  .box p:last-child { margin-bottom: 0; }
+
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .row-label { font-weight: 500; color: #444; width: 100px; flex-shrink: 0; }
+  .mono-val {
     font-family: 'SF Mono', 'Menlo', monospace;
     font-size: 12px;
     background: #f0f0f0;
-    padding: 5px 8px;
-    border-radius: 4px;
     border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 5px 8px;
     flex: 1;
-    user-select: text;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     color: #1a1a1a;
+    user-select: text;
   }
   .copy-btn {
-    padding: 4px 10px;
-    font-size: 11px;
+    padding: 5px 12px;
+    font-size: 12px;
     border-radius: 4px;
     border: 1px solid #ccc;
     background: #fff;
     cursor: pointer;
-    white-space: nowrap;
     flex-shrink: 0;
   }
-  .copy-btn:hover { background: #e8e8e8; }
+  .copy-btn:active { background: #e0e0e0; }
+
   code {
     font-family: 'SF Mono', 'Menlo', monospace;
     font-size: 12px;
@@ -71,7 +78,8 @@
     padding: 1px 4px;
     border-radius: 3px;
   }
-  .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+  .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
   button {
     padding: 7px 18px;
     border-radius: 6px;
@@ -88,13 +96,13 @@
     font-weight: 500;
   }
   button.primary:hover { background: #3a7bd5; }
-  #status { font-size: 11px; color: #4a90e2; text-align: right; margin-top: 6px; min-height: 16px; }
+  #err { font-size: 11px; color: #c0392b; margin-top: 8px; min-height: 16px; }
 </style>
 </head>
 <body>
 <h2>Settings</h2>
 
-<div class="field">
+<div>
   <label for="baseUrl">Upstream API base URL</label>
   <input type="text" id="baseUrl" placeholder="https://api.anthropic.com">
   <div class="hint">Where ddbya forwards requests to. Leave as default unless you use a custom Anthropic-compatible gateway.</div>
@@ -102,52 +110,46 @@
 
 <hr>
 
-<div class="instructions">
+<div class="box">
   <h3>How to set up Claude Desktop</h3>
   <p>In Claude Desktop, go to <strong>Settings → Developer</strong> and enter:</p>
-  <div class="kv">
-    <span class="key">API Base URL</span>
-    <div class="proxy-row">
-      <span class="proxy-val" id="proxyUrl"></span>
-      <button class="copy-btn" id="copyBtn">Copy</button>
-    </div>
+
+  <div class="row">
+    <span class="row-label">API Base URL</span>
+    <span class="mono-val" id="proxyUrl">loading…</span>
+    <button class="copy-btn" id="copyBtn">Copy</button>
   </div>
-  <p style="margin-top:10px;">For <strong>Auth Token</strong>, enter your <code>ANTHROPIC_AUTH_TOKEN</code> (starts with <code>sk-ant-</code>) directly in Claude Desktop. ddbya passes it through to the upstream unchanged and never stores it.</p>
+
+  <p>For <strong>Auth Token</strong>, enter your own <code>sk-ant-…</code> key directly in Claude Desktop. ddbya passes it through unchanged and never stores it here.</p>
 </div>
 
-<div id="status"></div>
+<div id="err"></div>
 <div class="actions">
   <button id="cancel">Cancel</button>
   <button class="primary" id="save">Save</button>
 </div>
 
 <script>
+  let proxyUrl = '';
+
   async function load() {
     const s = await window.ddbya.getSettings();
     document.getElementById('baseUrl').value = s.upstreamBaseUrl || 'https://api.anthropic.com';
-    document.getElementById('proxyUrl').textContent = s.proxyUrl || '(not available)';
+    proxyUrl = s.proxyUrl || '';
+    document.getElementById('proxyUrl').textContent = proxyUrl || '(not yet available — reopen after startup)';
   }
 
-  document.getElementById('copyBtn').addEventListener('click', () => {
-    const text = document.getElementById('proxyUrl').textContent;
-    const el = document.createElement('textarea');
-    el.value = text;
-    el.style.position = 'fixed';
-    el.style.opacity = '0';
-    document.body.appendChild(el);
-    el.select();
-    document.execCommand('copy');
-    document.body.removeChild(el);
-    document.getElementById('copyBtn').textContent = 'Copied!';
-    setTimeout(() => { document.getElementById('copyBtn').textContent = 'Copy'; }, 2000);
+  document.getElementById('copyBtn').addEventListener('click', async () => {
+    if (!proxyUrl) return;
+    await window.ddbya.copyToClipboard(proxyUrl);
+    const btn = document.getElementById('copyBtn');
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
   });
 
   document.getElementById('save').addEventListener('click', async () => {
     const url = document.getElementById('baseUrl').value.trim();
-    if (!url) {
-      document.getElementById('status').textContent = 'Base URL cannot be empty.';
-      return;
-    }
+    if (!url) { document.getElementById('err').textContent = 'Base URL cannot be empty.'; return; }
     await window.ddbya.saveSettings({ upstreamBaseUrl: url });
     window.close();
   });

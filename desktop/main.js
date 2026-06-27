@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  app, Tray, Menu, nativeImage, BrowserWindow, dialog, ipcMain, shell,
+  app, Tray, Menu, nativeImage, BrowserWindow, dialog, ipcMain, shell, clipboard,
 } = require('electron');
 const http = require('http');
 const https = require('https');
@@ -453,7 +453,7 @@ function openSettingsWindow() {
   if (settingsWin && !settingsWin.isDestroyed()) { settingsWin.focus(); return; }
   settingsWin = new BrowserWindow({
     width: 560,
-    height: 420,
+    height: 480,
     title: 'Settings — ddbya Desktop',
     resizable: false,
     fullscreenable: false,
@@ -512,11 +512,15 @@ ipcMain.handle('save-tags', (_event, tags) => {
 
 ipcMain.handle('get-settings', () => ({
   ...loadSettings(),
-  proxyUrl: `http://127.0.0.1:${currentPort}`,
+  proxyUrl: currentPort ? `http://127.0.0.1:${currentPort}` : null,
 }));
 
 ipcMain.handle('save-settings', (_event, settings) => {
   saveSettings(settings);
+});
+
+ipcMain.handle('copy-to-clipboard', (_event, text) => {
+  clipboard.writeText(text);
 });
 
 ipcMain.handle('export-csv', async (_event, { from, to }) => {
