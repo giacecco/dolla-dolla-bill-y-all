@@ -200,11 +200,7 @@ def _match_tag(pattern, tag):
 
 
 def _discover_usage_paths(root):
-    """Yield (jsonl_path, project_dir) pairs for all usage files under root.
-
-    Checks .ddbya.d/usage-*.ddbya (new layout) and falls back to
-    .token-usage.ddbya (legacy) so projects not yet migrated still work.
-    """
+    """Yield (jsonl_path, project_dir) pairs for all usage files under root."""
     direct_dir = root / ".ddbya.d"
     usage_files = sorted(direct_dir.glob("usage-*.ddbya")) if direct_dir.is_dir() else []
     if usage_files:
@@ -213,14 +209,6 @@ def _discover_usage_paths(root):
     else:
         for p in sorted(root.rglob(".ddbya.d/usage-*.ddbya")):
             yield p, p.parent.parent
-
-    # Legacy fallback: pick up any .token-usage.ddbya not yet migrated.
-    legacy = root / ".token-usage.ddbya"
-    if legacy.exists():
-        yield legacy, root
-    for p in sorted(root.rglob(".token-usage.ddbya")):
-        if p != root / ".token-usage.ddbya":
-            yield p, p.parent
 
 
 def _discover_claude_desktop_paths():
