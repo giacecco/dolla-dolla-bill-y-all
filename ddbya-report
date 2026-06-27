@@ -510,7 +510,7 @@ def report(rows, from_date, to_date):
 
     def flush_project():
         nonlocal proj_input, proj_output, proj_read, proj_create, proj_reqs
-        if last_project is not None and proj_reqs:
+        if last_project is not None and proj_reqs and last_project != CLAUDE_DESKTOP_PROJECT:
             vals = [("(subtotal)", "Project")]
             if show_model:
                 vals.append(("", "Model"))

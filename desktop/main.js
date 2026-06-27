@@ -649,7 +649,10 @@ ipcMain.handle('save-settings', async (_event, settings) => {
     proxyOpts = { disableBeta: next.disableBeta };
     proxyServer = buildProxy(next.upstreamBaseUrl, tokenLogger, () => currentTags, proxyOpts);
     proxyServer.on('connection', s => { proxySockets.add(s); s.on('close', () => proxySockets.delete(s)); });
-    await new Promise(resolve => proxyServer.listen(currentPort, '127.0.0.1', resolve));
+    await new Promise((resolve, reject) => {
+      proxyServer.once('error', reject);
+      proxyServer.listen(currentPort, '127.0.0.1', resolve);
+    });
   }
 });
 
@@ -726,7 +729,20 @@ app.whenReady().then(async () => {
   proxyOpts = { disableBeta };
   proxyServer = buildProxy(upstream, tokenLogger, () => currentTags, proxyOpts);
   proxyServer.on('connection', s => { proxySockets.add(s); s.on('close', () => proxySockets.delete(s)); });
-  await new Promise(resolve => proxyServer.listen(currentPort, '127.0.0.1', resolve));
+  try {
+    await new Promise((resolve, reject) => {
+      proxyServer.once('error', reject);
+      proxyServer.listen(currentPort, '127.0.0.1', resolve);
+    });
+  } catch (err) {
+    await dialog.showMessageBox({
+      type: 'error',
+      title: 'Could not start proxy',
+      message: `Port ${currentPort} is already in use.\n\n${err.message}`,
+    });
+    app.quit();
+    return;
+  }
 
   // Register proxy URL with launchd (macOS) / registry (Windows) so Claude
   // Desktop picks it up on next launch — even if started from Finder/Spotlight.
