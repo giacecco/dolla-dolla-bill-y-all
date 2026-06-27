@@ -1,0 +1,5 @@
+{"cache_creation_input_tokens": 19336, "cache_read_input_tokens": 25036, "input_tokens": 3, "model": "claude-sonnet-4-6", "output_tokens": 282, "stream": true, "tags": ["ddbya core dev"], "timestamp": "2026-06-14T07:41:29Z"}
+{"cache_creation_input_tokens": 360, "cache_read_input_tokens": 44372, "input_tokens": 1, "model": "claude-sonnet-4-6", "output_tokens": 77, "stream": true, "tags": ["ddbya core dev"], "timestamp": "2026-06-14T07:41:32Z"}
+{"cache_creation_input_tokens": 111, "cache_read_input_tokens": 44732, "input_tokens": 1, "model": "claude-sonnet-4-6", "output_tokens": 142, "stream": true, "tags": ["ddbya core dev"], "timestamp": "2026-06-14T07:41:34Z"}
+{"cache_creation_input_tokens": 220, "cache_read_input_tokens": 44843, "input_tokens": 1, "model": "claude-sonnet-4-6", "output_tokens": 44, "stream": true, "tags": ["ddbya core dev"], "timestamp": "2026-06-14T07:41:43Z"}
+{"cache_creation_input_tokens": 42, "cache_read_input_tokens": 45063, "input_tokens": 343, "model": "claude-sonnet-4-6", "output_tokens": 6, "stream": true, "tags": ["ddbya core dev"], "timestamp": "2026-06-14T07:41:46Z"}

@@ -1,0 +1,39 @@
+appId: com.giacecco.ddbya-desktop
+productName: ddbya Desktop
+
+directories:
+  output: dist
+
+files:
+  - "**/*"
+  - "!dist/**"
+  - "!node_modules/.cache/**"
+  - "!scripts/**"
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - universal
+  icon: assets/icon.icns
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: entitlements.mac.plist
+  entitlementsInherit: entitlements.mac.plist
+  identity: "Developer ID Application: Gianfranco Cecconi (W52V7H5858)"
+  afterSign: scripts/notarize.js
+
+dmg:
+  sign: false
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: assets/icon.ico
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

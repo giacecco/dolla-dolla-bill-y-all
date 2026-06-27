@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'">
+  <title>Change Tags</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 13px;
+      background: #f5f5f5;
+      color: #1d1d1f;
+      padding: 20px;
+      user-select: none;
+    }
+    h2 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+    p.sub { color: #666; font-size: 12px; margin-bottom: 16px; }
+    .chip-row {
+      display: flex; flex-wrap: wrap; gap: 6px;
+      min-height: 32px; margin-bottom: 12px;
+    }
+    .chip {
+      display: flex; align-items: center; gap: 4px;
+      background: #CC785C; color: #fff;
+      border-radius: 14px; padding: 3px 10px 3px 12px;
+      font-size: 12px; font-weight: 500;
+    }
+    .chip button {
+      background: none; border: none; color: rgba(255,255,255,0.8);
+      cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px;
+    }
+    .chip button:hover { color: #fff; }
+    .add-row { display: flex; gap: 8px; margin-bottom: 16px; }
+    .add-row input {
+      flex: 1; padding: 7px 10px; border: 1px solid #ccc;
+      border-radius: 6px; font-size: 13px; outline: none;
+    }
+    .add-row input:focus { border-color: #CC785C; }
+    datalist {}
+    .btn-row { display: flex; justify-content: flex-end; gap: 8px; }
+    button.primary {
+      background: #CC785C; color: #fff; border: none;
+      border-radius: 6px; padding: 7px 18px; font-size: 13px;
+      cursor: pointer; font-weight: 500;
+    }
+    button.primary:hover { background: #b86448; }
+    button.secondary {
+      background: #e5e5e5; color: #333; border: none;
+      border-radius: 6px; padding: 7px 18px; font-size: 13px;
+      cursor: pointer;
+    }
+    button.secondary:hover { background: #d5d5d5; }
+    .past-label { font-size: 11px; color: #888; margin-bottom: 6px; }
+    .past-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 14px; }
+    .past-chip {
+      background: #eee; border: 1px solid #ddd; border-radius: 12px;
+      padding: 3px 10px; font-size: 11px; cursor: pointer; color: #555;
+    }
+    .past-chip:hover { background: #e0d4ce; border-color: #CC785C; color: #CC785C; }
+  </style>
+</head>
+<body>
+  <h2>Session tags</h2>
+  <p class="sub">Tags are written into every log entry from the next API request onwards.</p>
+
+  <div class="chip-row" id="chipRow"></div>
+
+  <div class="add-row">
+    <input id="tagInput" type="text" placeholder="Add a tag…" list="pastList" autocomplete="off">
+    <datalist id="pastList"></datalist>
+    <button class="primary" id="addBtn">Add</button>
+  </div>
+
+  <div id="pastSection" style="display:none">
+    <div class="past-label">Previously used in Claude Desktop:</div>
+    <div class="past-chips" id="pastChips"></div>
+  </div>
+
+  <div class="btn-row">
+    <button class="secondary" id="cancelBtn">Cancel</button>
+    <button class="primary" id="saveBtn">Save</button>
+  </div>
+
+  <script>
+    let currentTags = [];
+    const chipRow   = document.getElementById('chipRow');
+    const tagInput  = document.getElementById('tagInput');
+    const pastList  = document.getElementById('pastList');
+    const pastChips = document.getElementById('pastChips');
+    const pastSection = document.getElementById('pastSection');
+
+    function renderChips() {
+      chipRow.innerHTML = '';
+      currentTags.forEach((t, i) => {
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.innerHTML = `${escHtml(t)}<button title="Remove" data-i="${i}">&times;</button>`;
+        chip.querySelector('button').addEventListener('click', () => {
+          currentTags.splice(i, 1);
+          renderChips();
+        });
+        chipRow.appendChild(chip);
+      });
+    }
+
+    function escHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function addTag(val) {
+      val = val.trim();
+      if (val && !currentTags.includes(val)) {
+        currentTags.push(val);
+        renderChips();
+      }
+      tagInput.value = '';
+      tagInput.focus();
+    }
+
+    document.getElementById('addBtn').addEventListener('click', () => addTag(tagInput.value));
+    tagInput.addEventListener('keydown', e => { if (e.key === 'Enter') addTag(tagInput.value); });
+    document.getElementById('cancelBtn').addEventListener('click', () => window.close());
+    document.getElementById('saveBtn').addEventListener('click', async () => {
+      await window.ddbya.saveTags(currentTags);
+      window.close();
+    });
+
+    (async () => {
+      currentTags = await window.ddbya.getTags();
+      renderChips();
+
+      const past = await window.ddbya.getPastTags();
+      if (past.length) {
+        pastSection.style.display = '';
+        past.forEach(t => {
+          const opt = document.createElement('option');
+          opt.value = t;
+          pastList.appendChild(opt);
+
+          const chip = document.createElement('span');
+          chip.className = 'past-chip';
+          chip.textContent = t;
+          chip.addEventListener('click', () => addTag(t));
+          pastChips.appendChild(chip);
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

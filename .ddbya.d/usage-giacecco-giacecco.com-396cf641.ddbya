@@ -1,6 +1,6 @@
-{"billing_mode": "ollama_subscription", "input_tokens": 92135, "model": "deepseek-v4-pro", "output_tokens": 1501, "stream": true, "timestamp": "2026-05-24T13:12:33Z"}
-{"billing_mode": "ollama_subscription", "input_tokens": 93529, "model": "deepseek-v4-pro", "output_tokens": 753, "stream": true, "timestamp": "2026-05-24T13:13:49Z"}
-{"billing_mode": "ollama_subscription", "input_tokens": 94347, "model": "deepseek-v4-pro", "output_tokens": 145, "stream": true, "timestamp": "2026-05-24T13:16:13Z"}
-{"billing_mode": "ollama_subscription", "input_tokens": 94801, "model": "deepseek-v4-pro", "output_tokens": 323, "stream": true, "timestamp": "2026-05-24T13:16:25Z"}
-{"billing_mode": "ollama_subscription", "input_tokens": 95094, "model": "deepseek-v4-pro", "output_tokens": 90, "stream": true, "timestamp": "2026-05-24T13:16:41Z"}
-{"billing_mode": "ollama_subscription", "input_tokens": 95162, "model": "deepseek-v4-pro", "output_tokens": 106, "stream": true, "timestamp": "2026-05-24T13:16:53Z"}
+{"billing_mode": "ollama_subscription", "input_tokens": 92135, "model": "deepseek-v4-pro", "output_tokens": 1501, "stream": true, "tags": ["ddbya core dev"], "timestamp": "2026-05-24T13:12:33Z"}
+{"billing_mode": "ollama_subscription", "input_tokens": 93529, "model": "deepseek-v4-pro", "output_tokens": 753, "stream": true, "tags": ["ddbya core dev"], "timestamp": "2026-05-24T13:13:49Z"}
+{"billing_mode": "ollama_subscription", "input_tokens": 94347, "model": "deepseek-v4-pro", "output_tokens": 145, "stream": true, "tags": ["ddbya core dev"], "timestamp": "2026-05-24T13:16:13Z"}
+{"billing_mode": "ollama_subscription", "input_tokens": 94801, "model": "deepseek-v4-pro", "output_tokens": 323, "stream": true, "tags": ["ddbya core dev"], "timestamp": "2026-05-24T13:16:25Z"}
+{"billing_mode": "ollama_subscription", "input_tokens": 95094, "model": "deepseek-v4-pro", "output_tokens": 90, "stream": true, "tags": ["ddbya core dev"], "timestamp": "2026-05-24T13:16:41Z"}
+{"billing_mode": "ollama_subscription", "input_tokens": 95162, "model": "deepseek-v4-pro", "output_tokens": 106, "stream": true, "tags": ["ddbya core dev"], "timestamp": "2026-05-24T13:16:53Z"}

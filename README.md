@@ -1,50 +1,79 @@
 # dolla-dolla-bill-y-all
 
-It's easy to recognise the cost effectiveness of using modern AI vs, for example, coding by hand. That doesn't mean, however, that one can use it indiscriminately without keeping track of how many tokens they're burning. The features native of your cloud provider of choice - say, an Anthropic Claude subscription - won't always enable you to distinguish consumption between one project and another. This is particularly important when you need  to charge your clients fairly and proportionally to the use associated to their respective projects.
+It's easy to recognise the cost effectiveness of using modern AI vs, for example, coding by hand. That doesn't mean, however, that one can use it indiscriminately without keeping track of how many tokens they're burning. The features native of your cloud provider of choice - say, an Anthropic Claude subscription - won't always enable you to distinguish consumption between one project and another. This is particularly important when you need to charge your clients fairly and proportionally to the use associated to their respective projects.
 
-dolla-dolla-bill-y-all is a zero-dependency wrapper of Claude Code to log token consumption. Every request is forwarded transparently — the tool adds no perceptible latency — while usage data is written to a project-local JSONL file for analysis.
+dolla-dolla-bill-y-all provides two complementary tools:
+
+- **`ddbya`** — a zero-dependency CLI wrapper for Claude Code that logs token consumption per-project.
+- **ddbya Desktop** — a macOS/Windows menu bar / tray app that intercepts Claude Desktop traffic the same way.
+
+Both log to the same JSONL format and `ddbya-report` aggregates them all into one report.
 
 ## Installation
+
+### CLI tools
 
 ```sh
 # clone and link into your PATH
 git clone https://github.com/giacecco/dolla-dolla-bill-y-all.git
-ln -s "$(pwd)/dolla-dolla-bill-y-all/ddbya" "$(pwd)/dolla-dolla-bill-y-all/ddbya-report" /usr/local/bin/
+ln -s "$(pwd)/dolla-dolla-bill-y-all/ddbya" \
+      "$(pwd)/dolla-dolla-bill-y-all/ddbya-report" \
+      /usr/local/bin/
 ```
 
 Requires Python 3. No pip packages needed — standard library only.
 
-## Usage
+### ddbya Desktop (macOS)
+
+```sh
+cd dolla-dolla-bill-y-all
+bash desktop/scripts/build-mac.sh
+```
+
+Requirements: Node.js, npm, ImageMagick (`brew install imagemagick`), Xcode Command Line Tools.
+
+The script builds a signed and notarized universal binary, installs it to `/Applications/`, and launches it. The app sits in the menu bar as a Claude-asterisk-with-dollar icon.
+
+## Usage — CLI (Claude Code)
 
 ```sh
 ddbya                        # interactive session, uses env ANTHROPIC_BASE_URL
 ddbya --model sonnet         # any claude flags are forwarded
+ddbya --help                 # show ddbya-specific options
 
-# Tags -- label consumption for cross-project tracking
+# Tags — label consumption for cross-project tracking
 ddbya -t "reviewing PR #123"
 ddbya -t "client-acme" -t "urgent"   # multiple tags per session
 ```
 
 The wrapper respects your existing `ANTHROPIC_BASE_URL`.
 
+## Usage — Desktop (Claude Desktop)
+
+Launch **ddbya Desktop** from `/Applications` (or from the menu bar on subsequent uses). It:
+
+1. Starts a local proxy and registers it with the OS so Claude Desktop uses it.
+2. Intercepts all API traffic, logging tokens to `~/Library/Application Support/ddbya/Claude Desktop/.ddbya.d/`.
+3. Provides a tray menu to **change tags**, **export a CSV report**, or **launch Claude Desktop**.
+
+> **First-time setup:** after starting ddbya Desktop for the first time, quit and relaunch Claude Desktop so it picks up the proxy URL.
+
 ### Directory layout
 
 `--tag` and reporting key off a simple directory convention: group each client's projects under a shared parent folder. `ddbya-report` is recursive, starting from any folder.
 
 ```
-projects/                     ← cd here, run ddbya-report . # report all consumption, divided by clients vs internal  
-├── clients/                  ← cd here, run ddbya-report . # report all consumption, divided by client
-│   └─── client-acme/         ← cd here, run ddbya-report . # report all consumption for client-acme, divided by project
+projects/                     ← cd here, run ddbya-report . # report all consumption
+├── clients/
+│   └─── client-acme/
 │   │  ├── web-frontend/      ← cd here, run ddbya -t "code review"
-│   │  └── api-backend/       ← cd here, run ddbya -t "client-acme"
+│   │  └── api-backend/
 │   └─── client-baker/
-│      ├── mobile-app/
-│      └── data-pipeline/
 └── internal/
     └── dolla-dolla-bill-y-all/
 ```
 
-- **Tags** — `-t` labels every entry in a session so `ddbya-report` can filter by tag later, even across projects in different parent / client folders, e.g. to see how many tokens were spent on "code review" across all clients.
+- **Tags** — `-t` labels every entry in a session so `ddbya-report` can filter by tag later, even across projects in different parent / client folders.
 - **Reporting** — point `ddbya-report` at a parent folder to aggregate across all its sub-projects, or at a single project folder to isolate one.
 
 ### Per-project credentials with direnv
@@ -57,30 +86,14 @@ export ANTHROPIC_API_KEY=sk-ant-...acme
 export ANTHROPIC_BASE_URL=https://gateway.acme.example.com
 ```
 
-```sh
-# clients/client-baker/.envrc
-export ANTHROPIC_API_KEY=sk-ant-...baker
-# no ANTHROPIC_BASE_URL → falls back to api.anthropic.com
-```
-
-For Claude.ai subscription accounts (Pro/Max), set `CLAUDE_CONFIG_DIR` instead of an API key, pointing at a config directory that has already been logged into the relevant account:
-
-```sh
-# internal/my-project/.envrc
-export CLAUDE_CONFIG_DIR=~/.config/claude-personal
-```
-
-direnv walks up the directory tree, so a `.envrc` at `clients/client-acme/` is picked up when you `cd` directly into any subdirectory of it. The folder structure then provides natural consumption attribution in `ddbya-report` with no manual tagging required.
-
-You can also set default tags via `DDBYA_TAGS` (comma-separated) so every session in that project is tagged automatically without passing `-t` each time:
+You can also set default tags via `DDBYA_TAGS` (comma-separated):
 
 ```sh
 # clients/client-acme/.envrc
-export ANTHROPIC_API_KEY=sk-ant-...acme
 export DDBYA_TAGS=client-acme
 ```
 
-Tags passed with `-t` at the command line are appended to `DDBYA_TAGS`, so you can still add session-specific tags on top:
+Tags passed with `-t` are appended to `DDBYA_TAGS`, so you can add session-specific tags on top:
 
 ```sh
 ddbya -t "code review"   # session tagged: client-acme, code review
@@ -88,7 +101,7 @@ ddbya -t "code review"   # session tagged: client-acme, code review
 
 ## Output
 
-Every API call appends a line to `.ddbya.d/usage-<identity>.ddbya` in the current working directory, where `<identity>` is derived from `git config user.email` (or `$USER` as fallback). Each contributor writes to their own file, so parallel work and PR merges never conflict:
+Every API call appends a line to `.ddbya.d/usage-<identity>-<session>.ddbya` in the current working directory (or to the Claude Desktop log directory for the desktop app). Each contributor writes to their own file, so parallel work and PR merges never conflict:
 
 ```json
 {"input_tokens": 354, "cache_read_input_tokens": 27123, "output_tokens": 42, "stream": true, "timestamp": "2026-05-13T14:30:00Z"}
@@ -96,10 +109,7 @@ Every API call appends a line to `.ddbya.d/usage-<identity>.ddbya` in the curren
 
 `cache_read_input_tokens` and `cache_creation_input_tokens` fields appear when prompt caching is active.
 
-When `-t`/`--tag` is used, entries include a `"tags"` list. Tags let you associate consumption with a purpose (e.g. a PR review, a client project, an experiment) independently of the folder the session ran in.
-
-
-Timestamps are ISO 8601 UTC — parseable natively by `datetime.fromisoformat()` (Python), `new Date()` (JavaScript), `time.Parse(time.RFC3339, …)` (Go), etc.
+When `-t`/`--tag` is used, entries include a `"tags"` list.
 
 When the session ends, a summary is printed to stderr:
 
@@ -114,36 +124,48 @@ Session token usage:
 
 ## Reporting
 
-`ddbya-report` aggregates `.ddbya.d/usage-*.ddbya` files across multiple projects (all contributors' files in each project are merged into a single project row).
+`ddbya-report` aggregates `.ddbya.d/usage-*.ddbya` files across multiple projects. Claude Desktop consumption (from the desktop app) is **always included automatically** as a project named `*Claude Desktop*`.
 
 ```sh
+ddbya-report --help
 ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]
 ```
 
-If the given folder directly contains a `.ddbya.d/` with usage files, it reports on that project only. Otherwise it recursively scans all subdirectories for `.ddbya.d/usage-*.ddbya` files. Legacy `.token-usage.ddbya` files (not yet migrated) are also read as a fallback. Groups usage by top-level subfolder and tags. Includes all data by default — pass `--last`, `--from`, or `--to` to filter by date. `--from` and `--to` can be used together or individually; `--from` without `--to` means "from that date to now". `--last` is mutually exclusive with `--from`/`--to`. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. `--json` outputs compact JSON to stdout instead of the table. `--csv` outputs CSV with a header row. Each row's `tags` is an array of strings in JSON, or a pipe-joined string in CSV. `--json` and `--csv` are mutually exclusive. Zero dependencies — Python 3 standard library only.
+If the given folder directly contains a `.ddbya.d/` with usage files, it reports on that project only. Otherwise it recursively scans all subdirectories for `.ddbya.d/usage-*.ddbya` files. Groups usage by top-level subfolder and tags. Includes all data by default — pass `--last`, `--from`, or `--to` to filter by date. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic). Tags wrapped in `/ /` are treated as regex. `--json` outputs compact JSON. `--csv` outputs CSV. Zero dependencies — Python 3 standard library only.
 
-Example — last 7 days of consumption for this project:
+A spinner is shown on stderr while data is being read.
+
+Example — last 7 days including Claude Desktop:
 
 ```sh
 ddbya-report . --last 7
 ```
 
 ```
-Token Usage Report — 2026-05-08 to 2026-05-14
+Token Usage Report — 2026-06-20 to 2026-06-27
 
-Project                 Model              Reqs  Input (base)  Cache Read  Cache Create  Total Input  Output Tokens  Tags
-──────────────────────  ─────────────────  ────  ────────────  ──────────  ────────────  ───────────  ─────────────  ────────────────────────────────────────────────────
+Project                 Model              Reqs  Input (base)  Cache Read  Cache Create  Total Input  Output Tokens
+──────────────────────  ─────────────────  ────  ────────────  ──────────  ────────────  ───────────  ─────────────
+*Claude Desktop*        claude-sonnet-4-6    42         3,201     412,004        10,501      425,706         18,224
 dolla-dolla-bill-y-all  claude-sonnet-4-6   382        29,237  28,813,849     1,260,719   30,103,805        283,038
-dolla-dolla-bill-y-all  claude-sonnet-4-6   277        15,247     509,891        70,391      595,529         97,661  code review | ddbya core dev
-dolla-dolla-bill-y-all  claude-sonnet-4-6   371        14,542           -             -       14,542         80,502  code writing | ddbya core dev
-(subtotal)                                1,030        29,026  29,323,740     1,260,719   59,613,485        461,201
 
-TOTAL                                     1,030        29,026  29,323,740     1,260,719   59,613,485        461,201
+TOTAL                                       424        32,438  29,225,853     1,271,220   30,529,511        301,262
 ```
+
+### Retagging
+
+You can add or remove tags from historical entries in-place:
+
+```sh
+ddbya-report . -t foobar -t +hello    # add "hello" to entries tagged "foobar"
+ddbya-report . -t /^client/ -t -old   # remove "old" from entries with a "client-*" tag
+```
+
+Retagging also operates on Claude Desktop log entries.
 
 ## Shell autocompletion
 
-`ddbya` and `ddbya-report` support tab completion for `-t`/`--tag` values. When you type `ddbya -t <TAB>` or `ddbya-report <folder> -t <TAB>`, the shell suggests tags already used across your projects. Completion is case-insensitive — typing `code` will match tags named `Code Review`, `code writing`, etc.
+`ddbya` and `ddbya-report` support tab completion for `-t`/`--tag` values. Tags from Claude Desktop logs are also included in completions.
 
 **zsh** — symlink the completion files into a directory in your `fpath`:
 
@@ -169,6 +191,8 @@ source /path/to/dolla-dolla-bill-y-all/completions/ddbya-report.bash
 
 ## How it works
 
+### CLI
+
 ```
 ddbya
   ├─ starts local reverse proxy on 127.0.0.1:<random-port>
@@ -177,6 +201,18 @@ ddbya
   ├─ proxy relays each request to the real upstream
   │   └─ parses usage from streaming (SSE) and non-streaming responses
   └─ on exit: prints summary, exits with claude's return code
+```
+
+### Desktop app
+
+```
+ddbya Desktop (tray app)
+  ├─ starts local reverse proxy on 127.0.0.1:<persistent-port>
+  ├─ registers proxy URL via launchctl setenv ANTHROPIC_BASE_URL (macOS)
+  │   └─ Claude Desktop picks this up on next launch
+  ├─ logs token usage to ~/Library/Application Support/ddbya/Claude Desktop/.ddbya.d/
+  ├─ tray menu: Change Tags / Export Report / Launch Claude Desktop / Quit
+  └─ on quit: unregisters env var, stops proxy
 ```
 
 Token extraction handles the Anthropic streaming format (`message_start` for input tokens, `message_delta` for output tokens). Gzip-encoded responses are decompressed transparently.

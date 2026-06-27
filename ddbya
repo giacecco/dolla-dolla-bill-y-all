@@ -37,15 +37,43 @@ DDBYA_DIR = ".ddbya.d"
 USAGE_FILENAME_PREFIX = "usage-"
 USAGE_GLOB = "usage-*.ddbya"
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
+_HELP = """\
+Usage: ddbya [OPTIONS] [CLAUDE_ARGS...]
+
+Reverse proxy wrapper for Claude Code that intercepts and logs token consumption.
+All arguments not listed below are forwarded to claude unchanged.
+
+Options:
+  -t, --tag <tag>   Tag this session's consumption. Can be given multiple times.
+                    Also reads DDBYA_TAGS env var (comma-separated); -t appends.
+  --list-tags       Print all tags used in this and sibling projects, then exit.
+                    Used by shell completions for tab-completing -t values.
+  -h, --help        Show this message and exit.
+
+Token usage is written to .ddbya.d/usage-<identity>-<session>.ddbya in the
+current directory. A summary is printed to stderr when the session ends.
+
+Examples:
+  ddbya
+  ddbya -t "client-acme" -t "code review"
+  ddbya --model claude-sonnet-4-6\
+"""
+
+
 def parse_args(argv):
-    """Extract wrapper-specific flags, return (tags, list_tags, remaining_args_for_claude)."""
+    """Extract wrapper-specific flags, return (tags, list_tags, show_help, remaining_args_for_claude)."""
     tags = []
     list_tags = False
+    show_help = False
     claude_args = []
     i = 0
     while i < len(argv):
         arg = argv[i]
-        if arg in ("-t", "--tag"):
+        if arg in ("-h", "--help"):
+            show_help = True
+            i += 1
+            continue
+        elif arg in ("-t", "--tag"):
             if i + 1 >= len(argv):
                 print("error: -t/--tag requires a value", file=sys.stderr)
                 sys.exit(1)
@@ -60,7 +88,7 @@ def parse_args(argv):
         i += 1
 
     env_tags = [t.strip() for t in os.environ.get("DDBYA_TAGS", "").split(",") if t.strip()]
-    return env_tags + tags, list_tags, claude_args
+    return env_tags + tags, list_tags, show_help, claude_args
 
 
 def _find_tag_root(start_dir):
@@ -102,10 +130,27 @@ def _collect_tags_from_dir(root_dir):
     return tags
 
 
+def _claude_desktop_log_root():
+    """Return the ddbya app-support root that holds Claude Desktop logs, or None."""
+    import re as _re
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "ddbya"
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", "")
+        return Path(appdata) / "ddbya" if appdata else None
+    return None
+
+
 def collect_tags(project_dir):
-    """Walk up to the nearest ancestor without a .ddbya.d/ directory, then collect all tags recursively downwards."""
+    """Walk up to the nearest ancestor without a .ddbya.d/ directory, then collect all tags.
+    Also includes tags from Claude Desktop logs so the desktop app's tags appear in completions.
+    """
     root = _find_tag_root(project_dir)
-    return sorted(_collect_tags_from_dir(root))
+    tags = _collect_tags_from_dir(root)
+    cd_root = _claude_desktop_log_root()
+    if cd_root and cd_root.is_dir():
+        tags.update(_collect_tags_from_dir(cd_root))
+    return sorted(tags)
 
 
 def _sanitise_identity(s):
@@ -542,7 +587,11 @@ def format_summary(input_tokens, output_tokens, cache_read, cache_create, reques
 
 
 def main():
-    tags, list_tags, claude_args = parse_args(sys.argv[1:])
+    tags, list_tags, show_help, claude_args = parse_args(sys.argv[1:])
+
+    if show_help:
+        print(_HELP)
+        sys.exit(0)
 
     if list_tags:
         for tag in collect_tags(Path.cwd()):

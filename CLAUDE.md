@@ -2,19 +2,20 @@
 
 ## Project
 
-A zero-dependency Python 3 reverse proxy that wraps Claude Code to intercept and log API token usage. Single file: `ddbya`. Reporting script: `ddbya-report`.
+A zero-dependency Python 3 reverse proxy that wraps Claude Code to intercept and log API token usage. Single file: `ddbya`. Reporting script: `ddbya-report`. Desktop tray app (Electron): `desktop/`.
 
 ## Architecture
 
 - `TokenLogger` — thread-safe JSONL writer with in-memory session tracking. Writes to `.ddbya.d/usage-<identity>-<session>.ddbya` (see Identity & layout).
 - `ReverseProxyHandler` — `http.server.BaseHTTPRequestHandler` subclass. Forwards any HTTP method to the upstream, relays streaming (SSE) and non-streaming responses chunk-by-chunk, and extracts `usage` from the response.
 - `ReverseProxy` — manages the `ThreadingHTTPServer` lifecycle. Binds to port 0 for auto-selection, passes upstream scheme/netloc/base-path, tags, and `log_path` to the handler via class attributes. The upstream URL's path component is preserved as `upstream_base_path` and prepended to every forwarded request — required for any endpoint whose Anthropic-compatible API lives under a non-root path.
-- `parse_args()` — extracts `-t`/`--tag` and `--list-tags` from argv. Merges `DDBYA_TAGS` env var (comma-separated) with `-t` flags. Returns `(tags, list_tags, claude_args)`. `-t`/`--tag` can be given multiple times.
-- `collect_tags()` — scans `.ddbya.d/usage-*.ddbya` in the current project and sibling directories, returning all unique tags found. Used by `--list-tags` for shell tab completion of `-t`/`--tag` values.
+- `parse_args()` — extracts `-t`/`--tag`, `--list-tags`, and `-h`/`--help` from argv. Merges `DDBYA_TAGS` env var (comma-separated) with `-t` flags. Returns `(tags, list_tags, show_help, claude_args)`. `-t`/`--tag` can be given multiple times.
+- `collect_tags()` — scans `.ddbya.d/usage-*.ddbya` in the current project and sibling directories, **plus the Claude Desktop log root** (`~/Library/Application Support/ddbya/` on macOS), returning all unique tags found. Used by `--list-tags` for shell tab completion of `-t`/`--tag` values.
+- `_claude_desktop_log_root()` — returns the platform-specific ddbya app-support root that holds Claude Desktop logs.
 - `_sanitise_identity(s)` — lowercases s and collapses runs of non-`[a-z0-9._-]` chars to a single `-`. Returns `"anonymous"` if the result is empty.
 - `_resolve_identity()` — determines the per-user identity string used in log filenames. Resolution order: `git config user.email` → `$USER` → UUID stored in `~/.config/ddbya/id` (generated on first call if absent).
 - `_migrate_legacy_layout(project_dir, identity)` — idempotent startup migration. Moves `.token-usage.ddbya` → `.ddbya.d/usage-<identity>-<session>.ddbya` if the legacy file exists at the project root. Prints one line to stderr if moved.
-- `main()` — parses args, resolves identity and calls `_migrate_legacy_layout`, configures upstream from `ANTHROPIC_BASE_URL` (or default), starts proxy. If `--list-tags` is given, prints collected tags and exits. Sets `ANTHROPIC_BASE_URL` to the proxy URL. Runs `claude` via `subprocess.Popen` with inherited stdio. Prints session summary to stderr on exit.
+- `main()` — parses args, resolves identity and calls `_migrate_legacy_layout`, configures upstream from `ANTHROPIC_BASE_URL` (or default), starts proxy. If `--help` is given, prints help and exits. If `--list-tags` is given, prints collected tags and exits. Sets `ANTHROPIC_BASE_URL` to the proxy URL. Runs `claude` via `subprocess.Popen` with inherited stdio. Prints session summary to stderr on exit.
 
 ## Token extraction
 
@@ -27,7 +28,7 @@ A zero-dependency Python 3 reverse proxy that wraps Claude Code to intercept and
 
 ## No dependencies
 
-Uses only Python 3 standard library: `http.server`, `http.client`, `urllib.parse`, `json`, `threading`, `subprocess`, `pathlib`, `signal`, `gzip`, `zlib`, `uuid`.
+`ddbya` and `ddbya-report` use only Python 3 standard library: `http.server`, `http.client`, `urllib.parse`, `json`, `threading`, `subprocess`, `pathlib`, `signal`, `gzip`, `zlib`, `uuid`, `itertools`, `time`.
 
 ## Identity & layout
 
@@ -47,13 +48,15 @@ Per-session filenames use the pattern `usage-<identity>-<session>.ddbya`, where 
 
 ## Reporting
 
-`ddbya-report` aggregates `.ddbya.d/usage-*.ddbya` files across multiple projects.
+`ddbya-report` aggregates `.ddbya.d/usage-*.ddbya` files across multiple projects, always including Claude Desktop logs as project `*Claude Desktop*`.
 
 ```
 ddbya-report /path/to/projects [--last N | --today] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--model <model> ...] [--json | --csv]
+ddbya-report --help   (no folder required)
 ```
 
 - If the given folder directly contains a `.ddbya.d/` with usage files, reports on that project only. Otherwise scans subdirectories recursively for `.ddbya.d/usage-*.ddbya` files.
+- **Claude Desktop logs** (`~/Library/Application Support/ddbya/Claude Desktop/.ddbya.d/` on macOS; `%APPDATA%\ddbya\Claude Desktop\.ddbya.d\` on Windows) are always included as project `*Claude Desktop*`, unless they are already within the specified root (to avoid double-counting).
 - Legacy `.token-usage.ddbya` files (not yet migrated) are also read as a fallback.
 - Project name = top-level subfolder under the given root that contains the `.ddbya.d/` directory (first path component after root). If the directory is directly in root, uses root's directory name.
 - Aggregates by project, model, and tags (across all per-user files in the same project). A Model column appears whenever any entry has a model field; a Tags column appears whenever any entry has tags.
@@ -65,12 +68,85 @@ ddbya-report /path/to/projects [--last N | --today] [--from YYYY-MM-DD] [--to YY
   - `-t +tagname` adds "tagname" to all matching entries.
   - `-t -tagname` removes "tagname" from all matching entries. Wrap in `/ /` for regex: `-t -/^Steve/`.
   - Retagging modifies `.ddbya.d/usage-*.ddbya` files in-place. Cannot be combined with `--json`/`--csv`.
+  - Retagging also operates on Claude Desktop log files.
   - Example: `ddbya-report . -t foobar -t +hello` adds "hello" to every entry that has tag "foobar".
+- A spinner is shown on stderr while data is being read (only when stderr is a TTY).
 - Zero dependencies — Python 3 standard library only.
+
+## Desktop app
+
+`desktop/` contains an Electron tray app that intercepts Claude Desktop's API traffic the same way `ddbya` wraps Claude Code.
+
+### What it does
+
+- Sits in the macOS menu bar (or Windows system tray) as a small icon (Claude asterisk + $ sign).
+- Starts a local reverse proxy on a persistent port (default 18723, stored in `~/Library/Application Support/ddbya/state.json`).
+- Registers the proxy URL with the OS (`launchctl setenv ANTHROPIC_BASE_URL` on macOS; Windows registry on Windows) so that Claude Desktop picks it up on next launch.
+- If the persistent port is already in use at startup, picks a random free port and shows a persistent warning dialog asking the user to restart Claude Desktop.
+- Logs token usage to `~/Library/Application Support/ddbya/Claude Desktop/.ddbya.d/usage-<identity>-<session>.ddbya` (macOS) or `%APPDATA%\ddbya\Claude Desktop\.ddbya.d\...` (Windows).
+- On quit: unregisters the env var so future Claude Desktop launches go to the real API directly.
+
+### Menu
+
+- **Change Tags…** — opens a window to set tags that will be applied to all subsequent log entries. Past tags from Claude Desktop logs are suggested.
+- **Export Report (CSV)…** — opens a window to pick a date range and export a CSV of Claude Desktop token usage via `ddbya-report`.
+- **Launch Claude Desktop** — launches Claude Desktop with the proxy env var already set in its environment.
+- **Quit** — stops the proxy and unregisters the env var.
+
+### File layout
+
+```
+desktop/
+  main.js                ← Electron main process: proxy + tray + IPC
+  preload.js             ← contextBridge API for renderer windows
+  renderer/
+    tags.html            ← tags management UI
+    report.html          ← CSV export UI
+  assets/
+    icon.svg             ← source icon (committed)
+    icon.png             ← generated at build time (not committed)
+    icon.icns            ← generated at build time (not committed)
+    icon.ico             ← generated at build time (not committed)
+  scripts/
+    generate-icons.js    ← ImageMagick-based icon generator
+    notarize.js          ← electron-builder afterSign hook
+    build-mac.sh         ← full build → sign → notarize → deploy pipeline
+  package.json
+  electron-builder.yml
+  entitlements.mac.plist
+  .gitignore
+```
+
+### Building for macOS
+
+```bash
+bash desktop/scripts/build-mac.sh
+```
+
+Requirements:
+- Node.js and npm
+- ImageMagick (`brew install imagemagick`)
+- Xcode Command Line Tools (for `codesign`, `iconutil`, `xcrun notarytool`)
+- A notarisation app-specific password stored in Keychain as profile `ddbya-notarize` (the build script will prompt to create it on first run)
+
+Signing identity: `Developer ID Application: Gianfranco Cecconi (W52V7H5858)`
+
+The script kills any running instance, builds a universal binary (arm64 + x86_64), signs with the Developer ID certificate, notarizes with Apple, copies to `/Applications/`, and launches the new version.
+
+### Windows
+
+`desktop/` contains Windows build targets in `electron-builder.yml`. Build with:
+
+```bash
+cd desktop && npm install && npx electron-builder --win
+```
+
+Windows Authenticode signing is not yet configured (no certificate on file). Run `signtool.exe` manually or add a cert path to `electron-builder.yml` when a certificate is available.
 
 ## Maintenance
 
-- When a new Claude Code version is released, verify that none of ddbya's own short flags (`-t`) or long flags (`--tag`, `--list-tags`) conflict with new flags introduced by Claude Code itself. A conflict would shadow or consume a flag meant for the wrapped `claude` process.
+- When a new Claude Code version is released, verify that none of ddbya's own short flags (`-t`) or long flags (`--tag`, `--list-tags`, `--help`) conflict with new flags introduced by Claude Code itself. A conflict would shadow or consume a flag meant for the wrapped `claude` process.
+- When the Electron app's proxy port changes (because the default port is in use), the user must restart Claude Desktop to pick up the new URL. The app shows a warning dialog when this happens.
 
 ## Conventions
 

@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-Aggregate token usage across multiple Claude Code projects.
+Aggregate token usage across multiple Claude Code projects and Claude Desktop.
 
 Usage:
-    ddbya-report ROOT_FOLDER [--last N | --today] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--model <model> ...] [--json | --csv]
+    ddbya-report ROOT_FOLDER [OPTIONS]
     ddbya-report ROOT_FOLDER -t <filter> -t +<tag>   add tags to matching entries
     ddbya-report ROOT_FOLDER -t <filter> -t -<tag>   remove tags from matching entries
 
-Includes all data by default. Pass --last, --from, or --to to filter by date.
+Includes all data by default. Pass --last, --from, --to, or --today to filter by date.
 Retagging with -t +/- modifies .ddbya.d/usage-*.ddbya files in-place.
+
+Claude Desktop consumption (logged by the ddbya Desktop app) is always included
+as a project named "*Claude Desktop*", alongside the folder-based projects.
 
 Zero dependencies — Python 3 standard library only.
 """
@@ -18,19 +21,74 @@ import os
 import csv
 import json
 import re
+import itertools
+import threading
+import time
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 from pathlib import Path
 
 DDBYA_DIR = ".ddbya.d"
 USAGE_GLOB = "usage-*.ddbya"
+CLAUDE_DESKTOP_PROJECT = "*Claude Desktop*"
+
+_HELP = """\
+Usage: ddbya-report ROOT_FOLDER [OPTIONS]
+
+Aggregate token usage across Claude Code projects and Claude Desktop.
+
+Arguments:
+  ROOT_FOLDER           Directory to scan. If it directly contains a .ddbya.d/
+                        folder, reports on that project only; otherwise scans
+                        all subdirectories recursively. Claude Desktop logs are
+                        always included as project "*Claude Desktop*".
+
+Filtering:
+  --last N              Include only the last N days.
+  --today               Include only today's entries. Exclusive with --last/--from/--to.
+  --from YYYY-MM-DD     Include entries on or after this date.
+  --to   YYYY-MM-DD     Include entries up to and including this date.
+  -t, --tag <value>     Filter to entries matching this tag (AND logic; repeatable).
+                        Wrap in /…/ for regex: -t /^client/
+  --model <value>       Filter to entries matching this model (OR logic; repeatable).
+                        Wrap in /…/ for regex: --model /sonnet/
+
+Output:
+  --json                Output compact JSON instead of a table.
+  --csv                 Output CSV with a header row.
+  (default)             Print a formatted table to stdout.
+
+Retagging (modifies files in-place; cannot combine with --json/--csv):
+  -t +tagname           Add "tagname" to every matching entry.
+  -t -tagname           Remove "tagname" from every matching entry.
+  -t -/regex/           Remove tags matching regex from every matching entry.
+
+  Example: ddbya-report . -t foobar -t +hello
+           Adds "hello" to every entry that already has tag "foobar".
+
+Other:
+  -h, --help            Show this message and exit.\
+"""
+
+
+def _claude_desktop_log_dir():
+    """Return the Claude Desktop .ddbya.d path for the current platform, or None."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "ddbya" / "Claude Desktop" / DDBYA_DIR
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            return Path(appdata) / "ddbya" / "Claude Desktop" / DDBYA_DIR
+    return None
 
 
 def parse_args():
     args = sys.argv[1:]
-    if not args:
-        sys.exit("Usage: ddbya-report ROOT_FOLDER [--last N | --today] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--model <model> ...] [--json | --csv]\n"
-                 "       ddbya-report ROOT_FOLDER -t +/-TAG  (retag, in-place)")
+
+    # --help works even with no folder specified
+    if not args or args[0] in ("-h", "--help"):
+        print(_HELP)
+        sys.exit(0)
 
     root = Path(args[0])
     if not root.is_dir():
@@ -41,7 +99,10 @@ def parse_args():
 
     i = 1
     while i < len(args):
-        if args[i] == "--last" and i + 1 < len(args):
+        if args[i] in ("-h", "--help"):
+            print(_HELP)
+            sys.exit(0)
+        elif args[i] == "--last" and i + 1 < len(args):
             try:
                 params["last"] = int(args[i + 1])
             except ValueError:
@@ -162,55 +223,92 @@ def _discover_usage_paths(root):
             yield p, p.parent
 
 
+def _discover_claude_desktop_paths():
+    """Yield (jsonl_path, CLAUDE_DESKTOP_PROJECT) pairs for Claude Desktop logs."""
+    cd_dir = _claude_desktop_log_dir()
+    if cd_dir and cd_dir.is_dir():
+        for p in sorted(cd_dir.glob(USAGE_GLOB)):
+            yield p, CLAUDE_DESKTOP_PROJECT
+
+
+def _is_claude_desktop_path(jsonl_path):
+    """True if this file lives inside the Claude Desktop log directory."""
+    cd_dir = _claude_desktop_log_dir()
+    if not cd_dir:
+        return False
+    try:
+        jsonl_path.relative_to(cd_dir)
+        return True
+    except ValueError:
+        return False
+
+
+def _collect_from_file(jsonl_path, project, from_date, to_date, tag_filters, model_filters, usage):
+    try:
+        fh = open(jsonl_path, encoding="utf-8")
+    except OSError:
+        return
+    with fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                ts = datetime.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            except (json.JSONDecodeError, KeyError, ValueError):
+                continue
+            if from_date is not None and ts < from_date:
+                continue
+            if to_date is not None and ts >= to_date:
+                continue
+
+            entry_tags = entry.get("tags")
+            if isinstance(entry_tags, list):
+                entry_tags = sorted(entry_tags, key=str.lower)
+            else:
+                entry_tags = []
+            if tag_filters and not all(
+                any(_match_tag(pat, tag) for tag in entry_tags)
+                for pat in tag_filters
+            ):
+                continue
+            entry_model = entry.get("model", "")
+            if model_filters and not any(_match_tag(pat, entry_model) for pat in model_filters):
+                continue
+            usage.append({
+                "project": project,
+                "model": entry_model,
+                "tags": entry_tags,
+                "input_tokens": entry.get("input_tokens", 0),
+                "output_tokens": entry.get("output_tokens", 0),
+                "cache_read": entry.get("cache_read_input_tokens", 0),
+                "cache_create": entry.get("cache_creation_input_tokens", 0),
+                "requests": 1,
+            })
+
+
 def collect_entries(root, from_date, to_date, tag_filters=None, model_filters=None):
     usage = []
+    cd_included = False
+
     for jsonl_path, project_dir in _discover_usage_paths(root):
-        if project_dir == root:
+        # If this file lives in the Claude Desktop dir, name it accordingly
+        # and mark that we've already included it (avoid double-counting later).
+        if _is_claude_desktop_path(jsonl_path):
+            project = CLAUDE_DESKTOP_PROJECT
+            cd_included = True
+        elif project_dir == root:
             project = root.name or root.resolve().name
         else:
             project = project_dir.relative_to(root).parts[0]
-        try:
-            fh = open(jsonl_path, encoding="utf-8")
-        except OSError:
-            continue
-        with fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    ts = datetime.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                except (json.JSONDecodeError, KeyError, ValueError):
-                    continue
-                if from_date is not None and ts < from_date:
-                    continue
-                if to_date is not None and ts >= to_date:
-                    continue
+        _collect_from_file(jsonl_path, project, from_date, to_date, tag_filters, model_filters, usage)
 
-                entry_tags = entry.get("tags")
-                if isinstance(entry_tags, list):
-                    entry_tags = sorted(entry_tags, key=str.lower)
-                else:
-                    entry_tags = []
-                if tag_filters and not all(
-                    any(_match_tag(pat, tag) for tag in entry_tags)
-                    for pat in tag_filters
-                ):
-                    continue
-                entry_model = entry.get("model", "")
-                if model_filters and not any(_match_tag(pat, entry_model) for pat in model_filters):
-                    continue
-                usage.append({
-                    "project": project,
-                    "model": entry.get("model", ""),
-                    "tags": entry_tags,
-                    "input_tokens": entry.get("input_tokens", 0),
-                    "output_tokens": entry.get("output_tokens", 0),
-                    "cache_read": entry.get("cache_read_input_tokens", 0),
-                    "cache_create": entry.get("cache_creation_input_tokens", 0),
-                    "requests": 1,
-                })
+    # Always include Claude Desktop logs unless they were already part of root.
+    if not cd_included:
+        for jsonl_path, project in _discover_claude_desktop_paths():
+            _collect_from_file(jsonl_path, project, from_date, to_date, tag_filters, model_filters, usage)
+
     return usage
 
 
@@ -218,8 +316,17 @@ def retag(root, from_date, to_date, tag_filters, add_tags, remove_tags):
     """Modify tags in .ddbya.d/usage-*.ddbya files in-place.
 
     Returns (modified_entries, modified_files).
+    Operates on both folder-based logs and Claude Desktop logs.
     """
     paths = [p for p, _ in _discover_usage_paths(root)]
+    # Include Claude Desktop paths unless already under root
+    cd_dir = _claude_desktop_log_dir()
+    if cd_dir:
+        for p, _ in _discover_claude_desktop_paths():
+            try:
+                p.relative_to(root)
+            except ValueError:
+                paths.append(p)
 
     total_modified = 0
     files_modified = 0
@@ -323,8 +430,6 @@ def _col_widths(rows):
     """Compute column widths from data so long values never silently truncate."""
     extra_labels = ["(subtotal)", "TOTAL"]
 
-    # lw returns a negative width (left-aligned); rw returns positive (right-aligned).
-    # _build_row checks the sign to choose the format spec.
     def lw(header, values):
         return -(max(len(header), max((len(v) for v in values), default=0)))
 
@@ -498,6 +603,21 @@ def csv_report(rows):
         writer.writerow(row)
 
 
+def _spinner(stop_event):
+    frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    for frame in itertools.cycle(frames):
+        if stop_event.is_set():
+            sys.stderr.write("\r\033[K")
+            sys.stderr.flush()
+            return
+        try:
+            sys.stderr.write(f"\r  {frame}  Reading usage data…")
+            sys.stderr.flush()
+        except (UnicodeEncodeError, OSError):
+            pass
+        time.sleep(0.08)
+
+
 def main():
     params = parse_args()
     from_date, to_date = resolve_window(params)
@@ -508,8 +628,23 @@ def main():
         print(f"Retagged {n} entr{'y' if n == 1 else 'ies'} across {files} file(s).")
         return
 
-    entries = collect_entries(params["root"], from_date, to_date, tag_filters=params["tags"], model_filters=params["models"])
-    rows = aggregate(entries)
+    # Show spinner while collecting data (only when stderr is a TTY)
+    stop = threading.Event()
+    if sys.stderr.isatty():
+        t = threading.Thread(target=_spinner, args=(stop,), daemon=True)
+        t.start()
+    else:
+        t = None
+
+    try:
+        entries = collect_entries(params["root"], from_date, to_date,
+                                  tag_filters=params["tags"], model_filters=params["models"])
+        rows = aggregate(entries)
+    finally:
+        stop.set()
+        if t is not None:
+            t.join()
+
     if params["json"]:
         output = {
             "from": from_date.strftime("%Y-%m-%d") if from_date else None,

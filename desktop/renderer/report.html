@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'">
+  <title>Export Report</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 13px;
+      background: #f5f5f5;
+      color: #1d1d1f;
+      padding: 20px;
+      user-select: none;
+    }
+    h2 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+    p.sub { color: #666; font-size: 12px; margin-bottom: 20px; }
+    .row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    label { width: 48px; font-size: 12px; color: #555; flex-shrink: 0; }
+    input[type="date"] {
+      flex: 1; padding: 7px 10px; border: 1px solid #ccc;
+      border-radius: 6px; font-size: 13px; outline: none;
+      background: #fff;
+    }
+    input[type="date"]:focus { border-color: #CC785C; }
+    .help { font-size: 11px; color: #888; margin-bottom: 20px; }
+    .btn-row { display: flex; justify-content: flex-end; gap: 8px; }
+    button.primary {
+      background: #CC785C; color: #fff; border: none;
+      border-radius: 6px; padding: 7px 18px; font-size: 13px;
+      cursor: pointer; font-weight: 500;
+    }
+    button.primary:hover { background: #b86448; }
+    button.primary:disabled { background: #ccc; cursor: default; }
+    button.secondary {
+      background: #e5e5e5; color: #333; border: none;
+      border-radius: 6px; padding: 7px 18px; font-size: 13px;
+      cursor: pointer;
+    }
+    button.secondary:hover { background: #d5d5d5; }
+    #status {
+      margin-top: 14px; font-size: 12px; color: #555;
+      min-height: 18px; text-align: center;
+    }
+    #status.error { color: #c0392b; }
+    #status.ok { color: #27ae60; }
+  </style>
+</head>
+<body>
+  <h2>Export Claude Desktop report</h2>
+  <p class="sub">Generates a CSV of token usage logged by ddbya Desktop.</p>
+
+  <div class="row">
+    <label for="fromDate">From</label>
+    <input type="date" id="fromDate">
+  </div>
+  <div class="row">
+    <label for="toDate">To</label>
+    <input type="date" id="toDate">
+  </div>
+  <p class="help">Leave both blank to export all data.</p>
+
+  <div class="btn-row">
+    <button class="secondary" id="cancelBtn">Cancel</button>
+    <button class="primary" id="exportBtn">Export CSV…</button>
+  </div>
+  <div id="status"></div>
+
+  <script>
+    const fromDate = document.getElementById('fromDate');
+    const toDate   = document.getElementById('toDate');
+    const exportBtn = document.getElementById('exportBtn');
+    const status    = document.getElementById('status');
+
+    document.getElementById('cancelBtn').addEventListener('click', () => window.close());
+
+    exportBtn.addEventListener('click', async () => {
+      exportBtn.disabled = true;
+      status.className = '';
+      status.textContent = 'Generating report…';
+
+      const from = fromDate.value || null;
+      const to   = toDate.value   || null;
+
+      try {
+        const result = await window.ddbya.exportCsv(from, to);
+        if (!result.ok) {
+          status.className = 'error';
+          status.textContent = `Error: ${result.error}`;
+          exportBtn.disabled = false;
+          return;
+        }
+        if (!result.csv || !result.csv.trim()) {
+          status.className = '';
+          status.textContent = 'No data found for the selected period.';
+          exportBtn.disabled = false;
+          return;
+        }
+
+        const parts = [];
+        if (from) parts.push(from);
+        if (to)   parts.push(to);
+        const defaultName = parts.length
+          ? `claude-desktop-${parts.join('_to_')}.csv`
+          : 'claude-desktop-report.csv';
+
+        const saved = await window.ddbya.saveCsv(result.csv, defaultName);
+        if (saved.ok) {
+          status.className = 'ok';
+          status.textContent = `Saved to ${saved.filePath}`;
+        } else {
+          status.className = '';
+          status.textContent = 'Export cancelled.';
+        }
+      } catch (err) {
+        status.className = 'error';
+        status.textContent = `Unexpected error: ${err.message}`;
+      }
+      exportBtn.disabled = false;
+    });
+  </script>
+</body>
+</html>

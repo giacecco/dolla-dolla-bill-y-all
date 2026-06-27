@@ -1,1 +1,1 @@
-{"billing_mode": "anthropic_api", "input_tokens": 8, "model": "claude-haiku-4-5-20251001", "output_tokens": 1, "stream": false, "tags": ["code writing", "exact pricing"], "timestamp": "2026-05-21T17:11:33Z"}
+{"billing_mode": "anthropic_api", "input_tokens": 8, "model": "claude-haiku-4-5-20251001", "output_tokens": 1, "stream": false, "tags": ["code writing", "exact pricing", "ddbya core dev"], "timestamp": "2026-05-21T17:11:33Z"}

@@ -1,0 +1,16 @@
+{
+  "name": "ddbya-desktop",
+  "version": "1.0.0",
+  "description": "ddbya Desktop — token usage monitor for Claude Desktop",
+  "main": "main.js",
+  "scripts": {
+    "prestart": "node scripts/generate-icons.js",
+    "start": "electron .",
+    "build:mac": "bash scripts/build-mac.sh"
+  },
+  "devDependencies": {
+    "@electron/notarize": "^2.5.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  }
+}

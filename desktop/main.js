@@ -1,0 +1,533 @@
+'use strict';
+
+const {
+  app, Tray, Menu, nativeImage, BrowserWindow, dialog, ipcMain, shell,
+} = require('electron');
+const http = require('http');
+const https = require('https');
+const net = require('net');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { execSync, spawnSync, spawn } = require('child_process');
+const crypto = require('crypto');
+const zlib = require('zlib');
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const DDBYA_DIR = '.ddbya.d';
+const USAGE_GLOB_RE = /^usage-.+\.ddbya$/;
+const DEFAULT_UPSTREAM = 'https://api.anthropic.com';
+const DEFAULT_PORT = 18723;
+
+// ── Platform paths ────────────────────────────────────────────────────────────
+
+const isMac = process.platform === 'darwin';
+const isWin = process.platform === 'win32';
+
+function appSupportDir() {
+  if (isMac) return path.join(os.homedir(), 'Library', 'Application Support', 'ddbya');
+  if (isWin) return path.join(process.env.APPDATA || os.homedir(), 'ddbya');
+  return path.join(os.homedir(), '.ddbya');
+}
+
+const APP_SUPPORT = appSupportDir();
+const CD_LOG_DIR = path.join(APP_SUPPORT, 'Claude Desktop', DDBYA_DIR);
+const STATE_FILE = path.join(APP_SUPPORT, 'state.json');
+
+// ── State persistence ─────────────────────────────────────────────────────────
+
+function loadState() {
+  try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return {}; }
+}
+
+function saveState(updates) {
+  const state = { ...loadState(), ...updates };
+  fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  return state;
+}
+
+// ── Identity ──────────────────────────────────────────────────────────────────
+
+function sanitiseIdentity(s) {
+  return (s || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'anonymous';
+}
+
+function resolveIdentity() {
+  try {
+    const email = execSync('git config --global user.email', { timeout: 3000 }).toString().trim();
+    if (email) return sanitiseIdentity(email);
+  } catch {}
+  const user = (() => { try { return os.userInfo().username; } catch { return ''; } })();
+  if (user) return sanitiseIdentity(user);
+  const state = loadState();
+  if (state.identity) return state.identity;
+  const id = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+  saveState({ identity: id });
+  return id;
+}
+
+// ── Port management ───────────────────────────────────────────────────────────
+
+function isPortFree(port) {
+  return new Promise(resolve => {
+    const srv = net.createServer();
+    srv.once('error', () => resolve(false));
+    srv.once('listening', () => { srv.close(); resolve(true); });
+    srv.listen(port, '127.0.0.1');
+  });
+}
+
+async function acquirePort() {
+  const state = loadState();
+  const preferred = state.port || DEFAULT_PORT;
+  if (await isPortFree(preferred)) return preferred;
+
+  // Port in use — pick a random free one
+  const srv = net.createServer();
+  await new Promise(resolve => srv.listen(0, '127.0.0.1', resolve));
+  const port = srv.address().port;
+  await new Promise(resolve => srv.close(resolve));
+  return port;
+}
+
+// ── Token logger ──────────────────────────────────────────────────────────────
+
+class TokenLogger {
+  constructor(logPath) {
+    this.logPath = logPath;
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    this.fd = fs.openSync(logPath, 'a');
+  }
+
+  log(entry) {
+    entry.timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const sorted = Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b)));
+    fs.writeSync(this.fd, JSON.stringify(sorted) + '\n');
+  }
+
+  close() { try { fs.closeSync(this.fd); } catch {} }
+}
+
+// ── Reverse proxy ─────────────────────────────────────────────────────────────
+
+function buildProxy(upstream, logger, tagsGetter) {
+  const upUrl = new URL(upstream);
+  const isUpHttps = upUrl.protocol === 'https:';
+
+  function forwardRequest(req, res) {
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => {
+      const body = Buffer.concat(chunks);
+
+      let isStreaming = false;
+      try { isStreaming = !!JSON.parse(body).stream; } catch {}
+
+      const upHeaders = {};
+      for (const [k, v] of Object.entries(req.headers)) {
+        const low = k.toLowerCase();
+        if (['host', 'connection', 'proxy-connection'].includes(low)) continue;
+        upHeaders[k] = v;
+      }
+
+      const opts = {
+        hostname: upUrl.hostname,
+        port: upUrl.port || (isUpHttps ? 443 : 80),
+        path: req.url,
+        method: req.method,
+        headers: upHeaders,
+        timeout: 300000,
+      };
+
+      const proto = isUpHttps ? https : http;
+      const upReq = proto.request(opts, upRes => {
+        const isGzip = (upRes.headers['content-encoding'] || '').toLowerCase() === 'gzip';
+
+        const resHeaders = {};
+        for (const [k, v] of Object.entries(upRes.headers)) {
+          const low = k.toLowerCase();
+          if (['transfer-encoding', 'connection', 'keep-alive'].includes(low)) continue;
+          if (low === 'content-encoding' && v.toLowerCase() === 'gzip') continue;
+          if (low === 'content-length' && (isGzip || isStreaming)) continue;
+          resHeaders[k] = v;
+        }
+        try { res.writeHead(upRes.statusCode, resHeaders); } catch { return; }
+
+        if (isStreaming) {
+          relayStream(upRes, res, isGzip, logger, tagsGetter);
+        } else {
+          const parts = [];
+          let stream = upRes;
+          if (isGzip) {
+            const gz = zlib.createGunzip();
+            upRes.pipe(gz);
+            stream = gz;
+          }
+          stream.on('data', c => parts.push(c));
+          stream.on('end', () => {
+            const respBody = Buffer.concat(parts);
+            try { res.end(respBody); } catch {}
+            extractUsageNonStream(respBody, logger, tagsGetter);
+          });
+          stream.on('error', () => { try { res.end(); } catch {} });
+        }
+      });
+
+      upReq.on('error', err => {
+        try { res.writeHead(502); res.end(`Bad Gateway: ${err.message}`); } catch {}
+      });
+      if (body.length) upReq.write(body);
+      upReq.end();
+    });
+  }
+
+  return http.createServer(forwardRequest);
+}
+
+function relayStream(upRes, res, isGzip, logger, tagsGetter) {
+  let best = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, model: '' };
+  let pending = Buffer.alloc(0);
+
+  function processLine(line) {
+    if (!line.startsWith('data: ')) return;
+    let ev;
+    try { ev = JSON.parse(line.slice(6)); } catch { return; }
+    const type = ev.type;
+    if (type === 'message_start') {
+      const u = (ev.message || {}).usage || {};
+      if (u.input_tokens > 0) best.input = u.input_tokens;
+      best.cacheRead = u.cache_read_input_tokens || 0;
+      best.cacheCreate = u.cache_creation_input_tokens || 0;
+      if (ev.message && ev.message.model) best.model = ev.message.model;
+    } else if (type === 'message_delta') {
+      const u = ev.usage || {};
+      if (u.output_tokens > 0) best.output = u.output_tokens;
+      if (ev.model) best.model = ev.model;
+    } else if (type === 'message_stop') {
+      const u = ev.usage || {};
+      if (u.input_tokens > 0) best.input = u.input_tokens;
+      if (u.output_tokens > 0) best.output = u.output_tokens;
+      if (ev.model) best.model = ev.model;
+    }
+  }
+
+  function handleChunk(chunk) {
+    pending = Buffer.concat([pending, chunk]);
+    let idx;
+    while ((idx = pending.indexOf('\n')) !== -1) {
+      const line = pending.slice(0, idx).toString('utf8').replace(/\r$/, '');
+      pending = pending.slice(idx + 1);
+      processLine(line);
+    }
+  }
+
+  let stream = upRes;
+  if (isGzip) {
+    const gz = zlib.createGunzip();
+    upRes.pipe(gz);
+    stream = gz;
+  }
+  stream.on('data', chunk => {
+    try { res.write(chunk); } catch {}
+    handleChunk(chunk);
+  });
+  stream.on('end', () => {
+    if (pending.length) processLine(pending.toString('utf8').replace(/\r$/, ''));
+    try { res.end(); } catch {}
+    if (best.input > 0 || best.output > 0) logEntry(best, true, logger, tagsGetter);
+  });
+  stream.on('error', () => { try { res.end(); } catch {}; });
+}
+
+function extractUsageNonStream(body, logger, tagsGetter) {
+  let data;
+  try { data = JSON.parse(body.toString()); } catch { return; }
+  const usage = data.usage;
+  if (!usage) return;
+  logEntry({
+    input: usage.input_tokens || 0,
+    output: usage.output_tokens || 0,
+    cacheRead: usage.cache_read_input_tokens || 0,
+    cacheCreate: usage.cache_creation_input_tokens || 0,
+    model: data.model || '',
+  }, false, logger, tagsGetter);
+}
+
+function logEntry(best, stream, logger, tagsGetter) {
+  const entry = { stream, input_tokens: best.input, output_tokens: best.output };
+  if (best.model) entry.model = best.model;
+  const tags = tagsGetter();
+  if (tags.length) entry.tags = [...tags];
+  if (best.cacheRead) entry.cache_read_input_tokens = best.cacheRead;
+  if (best.cacheCreate) entry.cache_creation_input_tokens = best.cacheCreate;
+  logger.log(entry);
+}
+
+// ── Past-tags collection ──────────────────────────────────────────────────────
+
+function collectPastTags() {
+  const tags = new Set();
+  if (!fs.existsSync(CD_LOG_DIR)) return [];
+  try {
+    for (const f of fs.readdirSync(CD_LOG_DIR)) {
+      if (!USAGE_GLOB_RE.test(f)) continue;
+      const lines = fs.readFileSync(path.join(CD_LOG_DIR, f), 'utf8').split('\n');
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (Array.isArray(entry.tags)) entry.tags.forEach(t => typeof t === 'string' && tags.add(t));
+        } catch {}
+      }
+    }
+  } catch {}
+  return [...tags].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+}
+
+// ── Claude Desktop launch / env ───────────────────────────────────────────────
+
+function findClaudeDesktop() {
+  if (isMac) {
+    const p = '/Applications/Claude.app/Contents/MacOS/Claude';
+    return fs.existsSync(p) ? p : null;
+  }
+  if (isWin) {
+    const candidates = [
+      path.join(process.env.LOCALAPPDATA || '', 'AnthropicClaude', 'claude.exe'),
+      path.join(process.env.PROGRAMFILES || '', 'Claude', 'claude.exe'),
+    ];
+    return candidates.find(p => fs.existsSync(p)) || null;
+  }
+  return null;
+}
+
+function setProxyEnv(port) {
+  const url = `http://127.0.0.1:${port}`;
+  if (isMac) {
+    try { execSync(`launchctl setenv ANTHROPIC_BASE_URL "${url}"`); } catch {}
+  } else if (isWin) {
+    try {
+      execSync(
+        `reg add "HKCU\\Environment" /v ANTHROPIC_BASE_URL /t REG_SZ /d "${url}" /f`,
+        { shell: true },
+      );
+    } catch {}
+  }
+}
+
+function unsetProxyEnv() {
+  if (isMac) {
+    try { execSync('launchctl unsetenv ANTHROPIC_BASE_URL'); } catch {}
+  } else if (isWin) {
+    try {
+      execSync('reg delete "HKCU\\Environment" /v ANTHROPIC_BASE_URL /f', { shell: true });
+    } catch {}
+  }
+}
+
+function launchClaudeDesktop(port) {
+  const claudePath = findClaudeDesktop();
+  if (!claudePath) {
+    dialog.showErrorBox(
+      'Claude Desktop not found',
+      isMac
+        ? 'Claude Desktop was not found at /Applications/Claude.app.\n\nPlease install Claude Desktop and try again.'
+        : 'Claude Desktop was not found.\n\nPlease install Claude Desktop and try again.',
+    );
+    return;
+  }
+  const env = { ...process.env, ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}` };
+  spawn(claudePath, [], { detached: true, stdio: 'ignore', env }).unref();
+}
+
+// ── Report export ─────────────────────────────────────────────────────────────
+
+function exportCsvReport(from, to) {
+  const scriptPath = path.join(__dirname, '..', 'ddbya-report');
+  const cdFolder = path.join(APP_SUPPORT, 'Claude Desktop');
+  const args = [cdFolder, '--csv'];
+  if (from) { args.push('--from', from); }
+  if (to) { args.push('--to', to); }
+
+  // Try python3 then python
+  for (const py of ['python3', 'python']) {
+    try {
+      const result = spawnSync(py, [scriptPath, ...args], { encoding: 'utf8', timeout: 30000 });
+      if (result.status === 0) return { ok: true, csv: result.stdout };
+      return { ok: false, error: result.stderr || `Exit code ${result.status}` };
+    } catch (err) {
+      if (err.code !== 'ENOENT') return { ok: false, error: err.message };
+    }
+  }
+  return { ok: false, error: 'Python 3 not found. Install Python 3 to export reports.' };
+}
+
+// ── Renderer windows ──────────────────────────────────────────────────────────
+
+let tagsWin = null;
+let reportWin = null;
+
+function openTagsWindow() {
+  if (tagsWin && !tagsWin.isDestroyed()) { tagsWin.focus(); return; }
+  tagsWin = new BrowserWindow({
+    width: 440,
+    height: 340,
+    title: 'Change Tags — ddbya Desktop',
+    resizable: false,
+    fullscreenable: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
+  });
+  tagsWin.loadFile(path.join(__dirname, 'renderer', 'tags.html'));
+  tagsWin.on('closed', () => { tagsWin = null; });
+}
+
+function openReportWindow() {
+  if (reportWin && !reportWin.isDestroyed()) { reportWin.focus(); return; }
+  reportWin = new BrowserWindow({
+    width: 480,
+    height: 320,
+    title: 'Export Report — ddbya Desktop',
+    resizable: false,
+    fullscreenable: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
+  });
+  reportWin.loadFile(path.join(__dirname, 'renderer', 'report.html'));
+  reportWin.on('closed', () => { reportWin = null; });
+}
+
+// ── Tray ──────────────────────────────────────────────────────────────────────
+
+let tray = null;
+let currentTags = [];
+let currentPort = null;
+
+function buildMenu() {
+  const tagLabel = currentTags.length
+    ? `Tags: ${currentTags.join(', ')}`
+    : 'No tags set';
+  return Menu.buildFromTemplate([
+    { label: `Proxy on port ${currentPort}`, enabled: false },
+    { label: tagLabel, enabled: false },
+    { type: 'separator' },
+    { label: 'Change Tags…', click: openTagsWindow },
+    { label: 'Export Report (CSV)…', click: openReportWindow },
+    { type: 'separator' },
+    { label: 'Launch Claude Desktop', click: () => launchClaudeDesktop(currentPort) },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      click: () => {
+        unsetProxyEnv();
+        app.quit();
+      },
+    },
+  ]);
+}
+
+function rebuildTrayMenu() {
+  if (tray) tray.setContextMenu(buildMenu());
+}
+
+// ── IPC handlers ──────────────────────────────────────────────────────────────
+
+ipcMain.handle('get-tags', () => currentTags);
+
+ipcMain.handle('get-past-tags', () => collectPastTags());
+
+ipcMain.handle('save-tags', (_event, tags) => {
+  currentTags = Array.isArray(tags) ? tags.filter(t => typeof t === 'string' && t.trim()) : [];
+  saveState({ tags: currentTags });
+  rebuildTrayMenu();
+});
+
+ipcMain.handle('export-csv', async (_event, { from, to }) => {
+  return exportCsvReport(from || null, to || null);
+});
+
+ipcMain.handle('save-csv', async (_event, { csv: csvContent, defaultName }) => {
+  const { canceled, filePath } = await dialog.showSaveDialog({
+    defaultPath: defaultName || 'claude-desktop-report.csv',
+    filters: [{ name: 'CSV', extensions: ['csv'] }],
+  });
+  if (canceled || !filePath) return { ok: false };
+  fs.writeFileSync(filePath, csvContent, 'utf8');
+  shell.showItemInFolder(filePath);
+  return { ok: true, filePath };
+});
+
+// ── App lifecycle ─────────────────────────────────────────────────────────────
+
+let proxyServer = null;
+let tokenLogger = null;
+
+app.whenReady().then(async () => {
+  // Single-instance enforcement
+  if (!app.requestSingleInstanceLock()) {
+    app.quit();
+    return;
+  }
+
+  // Hide from macOS Dock — we live only in the menu bar
+  if (app.dock) app.dock.hide();
+
+  // Set up token log
+  fs.mkdirSync(CD_LOG_DIR, { recursive: true });
+  const identity = resolveIdentity();
+  const sessionId = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+  const logPath = path.join(CD_LOG_DIR, `usage-${identity}-${sessionId}.ddbya`);
+  tokenLogger = new TokenLogger(logPath);
+
+  // Acquire port (persistent across restarts unless in use)
+  currentPort = await acquirePort();
+  const prevPort = loadState().port;
+  if (prevPort && prevPort !== currentPort) {
+    dialog.showMessageBox({
+      type: 'warning',
+      title: 'ddbya Desktop — Proxy Port Changed',
+      message: `Port ${prevPort} was already in use.\n\nThe proxy is now listening on port ${currentPort}.\n\nPlease restart Claude Desktop so it picks up the new address.`,
+      buttons: ['OK'],
+    });
+  }
+  saveState({ port: currentPort });
+
+  // Load saved tags
+  currentTags = loadState().tags || [];
+
+  // Start proxy
+  proxyServer = buildProxy(DEFAULT_UPSTREAM, tokenLogger, () => currentTags);
+  await new Promise(resolve => proxyServer.listen(currentPort, '127.0.0.1', resolve));
+
+  // Register proxy URL with launchd (macOS) / registry (Windows) so Claude
+  // Desktop picks it up on next launch — even if started from Finder/Spotlight.
+  setProxyEnv(currentPort);
+
+  // Create tray icon
+  const iconPath = path.join(__dirname, 'assets', 'icon.png');
+  let icon = nativeImage.createFromPath(iconPath);
+  if (icon.isEmpty()) {
+    // Fallback: empty placeholder so the tray still appears
+    icon = nativeImage.createEmpty();
+  }
+  if (isMac) icon = icon.resize({ width: 18, height: 18 });
+
+  tray = new Tray(icon);
+  tray.setToolTip(`ddbya Desktop — port ${currentPort}`);
+  tray.setContextMenu(buildMenu());
+  if (isMac) tray.on('click', () => tray.popUpContextMenu());
+});
+
+app.on('second-instance', () => {
+  // A second launch was attempted — just bring the existing instance to front
+  if (tagsWin && !tagsWin.isDestroyed()) tagsWin.focus();
+});
+
+// Don't quit when all renderer windows close — we're a tray-only app.
+app.on('window-all-closed', () => {});
+
+app.on('before-quit', () => {
+  unsetProxyEnv();
+  if (tokenLogger) tokenLogger.close();
+  if (proxyServer) proxyServer.close();
+});
