@@ -84,11 +84,37 @@
 
   <script>
     let currentTags = [];
+    let allPastTags = [];
     const chipRow   = document.getElementById('chipRow');
     const tagInput  = document.getElementById('tagInput');
     const pastList  = document.getElementById('pastList');
     const pastChips = document.getElementById('pastChips');
     const pastSection = document.getElementById('pastSection');
+
+    function escHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function renderPastSection() {
+      const available = allPastTags.filter(t => !currentTags.includes(t));
+      pastSection.style.display = available.length ? '' : 'none';
+
+      pastList.innerHTML = '';
+      available.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t;
+        pastList.appendChild(opt);
+      });
+
+      pastChips.innerHTML = '';
+      available.forEach(t => {
+        const chip = document.createElement('span');
+        chip.className = 'past-chip';
+        chip.textContent = t;
+        chip.addEventListener('click', () => addTag(t));
+        pastChips.appendChild(chip);
+      });
+    }
 
     function renderChips() {
       chipRow.innerHTML = '';
@@ -102,10 +128,7 @@
         });
         chipRow.appendChild(chip);
       });
-    }
-
-    function escHtml(s) {
-      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      renderPastSection();
     }
 
     function addTag(val) {
@@ -128,23 +151,8 @@
 
     (async () => {
       currentTags = await window.ddbya.getTags();
+      allPastTags = await window.ddbya.getPastTags();
       renderChips();
-
-      const past = await window.ddbya.getPastTags();
-      if (past.length) {
-        pastSection.style.display = '';
-        past.forEach(t => {
-          const opt = document.createElement('option');
-          opt.value = t;
-          pastList.appendChild(opt);
-
-          const chip = document.createElement('span');
-          chip.className = 'past-chip';
-          chip.textContent = t;
-          chip.addEventListener('click', () => addTag(t));
-          pastChips.appendChild(chip);
-        });
-      }
     })();
   </script>
 </body>

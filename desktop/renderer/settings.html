@@ -119,16 +119,17 @@
 <hr>
 
 <div class="box">
-  <h3>How to set up Claude Desktop</h3>
-  <p>In Claude Desktop, go to <strong>Settings → Developer</strong> and enter:</p>
+  <h3>How ddbya Desktop works</h3>
+  <p>Ddbya intercepts your calls to your Anthropic-compatible API provider and tracks token usage as your session progresses. It acts as a local proxy, forwarding requests with the same authentication you would use normally. Anthropic Subscriptions are not supported — only direct API access.</p>
+
+  <h3 style="margin-top:12px;">First-time setup</h3>
+  <p>Enter your provider's API base URL in the field above (e.g. <code>https://api.anthropic.com</code>). Then, in Claude Desktop, open the <code>Developer</code> menu (normally hidden) and choose <code>Config Third-Party Inference → Connection</code>. Select <code>Gateway</code> from the drop-down at the top. Under <code>Gateway Credentials</code>, set <code>Gateway base URL</code> to the address below, then configure the rest as you would for your real provider.</p>
 
   <div class="row">
-    <span class="row-label">API Base URL</span>
+    <span class="row-label">Gateway base URL</span>
     <span class="mono-val" id="proxyUrl">loading…</span>
     <button class="copy-btn" id="copyBtn">Copy</button>
   </div>
-
-  <p>For <strong>Auth Token</strong>, enter your own <code>sk-ant-…</code> key directly in Claude Desktop. ddbya passes it through unchanged and never stores it here.</p>
 </div>
 
 <div id="err"></div>

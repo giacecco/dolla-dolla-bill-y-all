@@ -517,7 +517,7 @@ function openSettingsWindow() {
   if (settingsWin && !settingsWin.isDestroyed()) { settingsWin.focus(); return; }
   settingsWin = new BrowserWindow({
     width: 560,
-    height: 530,
+    height: 600,
     title: 'Settings — ddbya Desktop',
     resizable: false,
     fullscreenable: false,
@@ -543,7 +543,11 @@ function formatTokens(n) {
 function applyTrayTitle() {
   if (!tray) return;
   const label = formatTokens(Math.round(displayedTokens));
-  tray.setTitle(label ? ` ${label}` : '', { fontType: 'monospacedDigit' });
+  if (isMac) tray.setTitle(label ? ` ${label}` : '', { fontType: 'monospacedDigit' });
+  const tip = label
+    ? `ddbya Desktop — port ${currentPort}\n${label} tokens this session`
+    : `ddbya Desktop — port ${currentPort}`;
+  tray.setToolTip(tip);
 }
 
 function addSessionTokens(n) {
@@ -576,7 +580,6 @@ function buildMenu() {
     ? `Tags: ${currentTags.join(', ')}`
     : 'No tags set';
   return Menu.buildFromTemplate([
-    { label: `Proxy on port ${currentPort}`, enabled: false },
     { label: tagLabel, enabled: false },
     { type: 'separator' },
     { label: 'Settings…', click: openSettingsWindow },
@@ -589,7 +592,19 @@ function buildMenu() {
     { type: 'separator' },
     {
       label: 'Quit',
-      click: () => {
+      click: async () => {
+        if (isClaudeDesktopRunning()) {
+          const { response } = await dialog.showMessageBox({
+            type: 'question',
+            title: 'Quit ddbya Desktop',
+            message: 'Claude Desktop is still running.\n\nWithout ddbya Desktop, its token usage will not be recorded.',
+            buttons: ['Quit Both', 'Quit ddbya Only', 'Cancel'],
+            defaultId: 0,
+            cancelId: 2,
+          });
+          if (response === 2) return;
+          if (response === 0) killClaudeDesktop();
+        }
         unsetProxyEnv();
         app.quit();
       },

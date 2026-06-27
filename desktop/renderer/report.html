@@ -111,8 +111,7 @@
 
         const saved = await window.ddbya.saveCsv(result.csv, defaultName);
         if (saved.ok) {
-          status.className = 'ok';
-          status.textContent = `Saved to ${saved.filePath}`;
+          window.close();
         } else {
           status.className = '';
           status.textContent = 'Export cancelled.';
