@@ -169,13 +169,6 @@ function buildProxy(upstream, logger, tagsGetter, optsRef) {
         upHeaders[k] = v;
       }
 
-      const dbgLog = path.join(APP_SUPPORT, 'debug.log');
-      const dbg = (msg) => {
-        try { fs.appendFileSync(dbgLog, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
-      };
-
-      dbg(`${req.method} ${req.url} disableBeta=${optsRef.disableBeta} bodyLen=${body.length}`);
-
       // Strip ?beta query param from forwarded URL regardless of disableBeta
       let forwardUrl = req.url;
       if (optsRef.disableBeta) {
@@ -203,10 +196,7 @@ function buildProxy(upstream, logger, tagsGetter, optsRef) {
             if (k.toLowerCase() === 'content-length') delete upHeaders[k];
           }
           upHeaders['content-length'] = String(body.length);
-          dbg(`transform OK newBodyLen=${body.length}`);
-        } catch (e) {
-          dbg(`transform FAILED: ${e.message} rawBody=${body.toString('utf8', 0, 200)}`);
-        }
+        } catch {}
       }
 
       // Remove anthropic-beta header entirely when beta features are disabled
@@ -227,7 +217,6 @@ function buildProxy(upstream, logger, tagsGetter, optsRef) {
 
       const proto = isUpHttps ? https : http;
       const upReq = proto.request(opts, upRes => {
-        dbg(`→ ${upRes.statusCode} ${req.method} ${req.url}`);
         const isGzip = (upRes.headers['content-encoding'] || '').toLowerCase() === 'gzip';
 
         const resHeaders = {};
@@ -240,19 +229,7 @@ function buildProxy(upstream, logger, tagsGetter, optsRef) {
         }
         try { res.writeHead(upRes.statusCode, resHeaders); } catch { return; }
 
-        if (isStreaming && upRes.statusCode >= 400) {
-          // Error on a streaming request — buffer and log it like a non-streaming error
-          const parts = [];
-          let stream = upRes;
-          if (isGzip) { const gz = zlib.createGunzip(); upRes.pipe(gz); stream = gz; }
-          stream.on('data', c => parts.push(c));
-          stream.on('end', () => {
-            const respBody = Buffer.concat(parts);
-            dbg(`error body (streaming): ${respBody.toString('utf8', 0, 500)}`);
-            try { res.end(respBody); } catch {}
-          });
-          stream.on('error', () => { try { res.end(); } catch {} });
-        } else if (isStreaming) {
+        if (isStreaming) {
           relayStream(upRes, res, isGzip, logger, tagsGetter);
         } else {
           const parts = [];
@@ -266,9 +243,6 @@ function buildProxy(upstream, logger, tagsGetter, optsRef) {
           stream.on('end', () => {
             const respBody = Buffer.concat(parts);
             try { res.end(respBody); } catch {}
-            if (upRes.statusCode >= 400) {
-              dbg(`error body: ${respBody.toString('utf8', 0, 500)}`);
-            }
             extractUsageNonStream(respBody, logger, tagsGetter);
           });
           stream.on('error', () => { try { res.end(); } catch {} });
@@ -722,14 +696,10 @@ app.whenReady().then(async () => {
     }
   }
 
-  // Create tray icon
-  const iconPath = path.join(__dirname, 'assets', 'icon.png');
-  let icon = nativeImage.createFromPath(iconPath);
-  if (icon.isEmpty()) {
-    // Fallback: empty placeholder so the tray still appears
-    icon = nativeImage.createEmpty();
-  }
-  if (isMac) icon = icon.resize({ width: 18, height: 18 });
+  // Create tray icon — use macOS template images (auto-adapt to dark/light menu bar)
+  const trayIconPath = path.join(__dirname, 'assets', 'TrayIconTemplate.png');
+  let icon = nativeImage.createFromPath(trayIconPath);
+  if (icon.isEmpty()) icon = nativeImage.createEmpty();
 
   tray = new Tray(icon);
   tray.setToolTip(`ddbya Desktop — port ${currentPort}`);
