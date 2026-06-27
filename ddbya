@@ -138,7 +138,8 @@ def _claude_desktop_log_root():
     if sys.platform == "win32":
         appdata = os.environ.get("APPDATA", "")
         return Path(appdata) / "ddbya" if appdata else None
-    return None
+    xdg = os.environ.get("XDG_DATA_HOME", "")
+    return Path(xdg) / "ddbya" if xdg else Path.home() / ".local" / "share" / "ddbya"
 
 
 def collect_tags(project_dir):

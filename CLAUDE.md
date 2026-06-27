@@ -4,6 +4,10 @@
 
 A zero-dependency Python 3 reverse proxy that wraps Claude Code to intercept and log API token usage. Single file: `ddbya`. Reporting script: `ddbya-report`. Desktop tray app (Electron): `desktop/`.
 
+## Platform support
+
+All components — `ddbya`, `ddbya-report`, and `desktop/` — must work correctly on Windows, macOS, and Linux. Use `pathlib.Path` for all file paths, `platform.system()` for any OS-specific branches, and avoid shell-isms that don't work on Windows (e.g. no bare `rm`, `cp`, or POSIX-only subprocess calls).
+
 ## Architecture
 
 - `TokenLogger` — thread-safe JSONL writer with in-memory session tracking. Writes to `.ddbya.d/usage-<identity>-<session>.ddbya` (see Identity & layout).
@@ -119,6 +123,10 @@ desktop/
     electron-builder.yml ← Windows packaging config
     build.ps1            ← Windows build script
     dist/                ← build output (not committed)
+  linux/
+    electron-builder.yml ← Linux packaging config (AppImage, x64 + arm64)
+    build.sh             ← Linux build script
+    dist/                ← build output (not committed)
 ```
 
 ### Building for macOS
@@ -150,6 +158,26 @@ cd desktop && npm install && npx electron-builder --win --config windows/electro
 Or via PowerShell: `.\windows\build.ps1`
 
 Windows Authenticode signing is not yet configured (no certificate on file). Run `signtool.exe` manually or add a cert path to `windows/electron-builder.yml` when a certificate is available.
+
+### Linux
+
+```bash
+bash desktop/linux/build.sh
+```
+
+Requirements:
+- Node.js and npm
+- ImageMagick (`apt install imagemagick` / `dnf install ImageMagick`)
+
+Produces an AppImage (x64 and arm64) in `desktop/linux/dist/`. AppImages are self-contained and require no installation — the user makes it executable and runs it.
+
+Linux signing is not configured. AppImages can be signed with `gpg` but this is not required for distribution.
+
+**Env var registration on Linux:** `setProxyEnv()` writes `~/.config/environment.d/ddbya.conf` (or `$XDG_CONFIG_HOME/environment.d/ddbya.conf`), which is picked up by systemd user sessions on login. Users on non-systemd distros will need to set `ANTHROPIC_BASE_URL` manually in their shell RC or launch Claude Desktop through ddbya Desktop's "Launch Claude Desktop" menu item (which passes the env var directly to the child process).
+
+**Log root on Linux:** `$XDG_DATA_HOME/ddbya` (defaults to `~/.local/share/ddbya`). This matches what `ddbya` and `ddbya-report` use on Linux.
+
+**Claude Desktop binary lookup on Linux:** tries `~/.local/bin/claude-desktop`, `/usr/bin/claude-desktop`, `/usr/local/bin/claude-desktop`, and `/opt/claude-desktop/claude-desktop` in order.
 
 ## Maintenance
 

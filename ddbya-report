@@ -79,7 +79,10 @@ def _claude_desktop_log_dir():
         appdata = os.environ.get("APPDATA", "")
         if appdata:
             return Path(appdata) / "ddbya" / "Claude Desktop" / DDBYA_DIR
-    return None
+        return None
+    xdg = os.environ.get("XDG_DATA_HOME", "")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return base / "ddbya" / "Claude Desktop" / DDBYA_DIR
 
 
 def parse_args():

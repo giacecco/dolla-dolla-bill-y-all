@@ -1,0 +1,25 @@
+appId: com.giacecco.ddbya-desktop
+productName: ddbya Desktop
+
+directories:
+  output: linux/dist
+
+files:
+  - "**/*"
+  - "!macos/**"
+  - "!windows/**"
+  - "!linux/**"
+  - "!node_modules/.cache/**"
+
+extraResources:
+  - from: "../ddbya-report"
+    to: "ddbya-report"
+
+linux:
+  category: Development
+  target:
+    - target: AppImage
+      arch:
+        - x64
+        - arm64
+  icon: assets/icon.png

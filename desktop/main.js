@@ -44,11 +44,13 @@ function saveSettings(settings) {
 
 const isMac = process.platform === 'darwin';
 const isWin = process.platform === 'win32';
+const isLinux = !isMac && !isWin;
 
 function appSupportDir() {
   if (isMac) return path.join(os.homedir(), 'Library', 'Application Support', 'ddbya');
   if (isWin) return path.join(process.env.APPDATA || os.homedir(), 'ddbya');
-  return path.join(os.homedir(), '.ddbya');
+  const xdg = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+  return path.join(xdg, 'ddbya');
 }
 
 const APP_SUPPORT = appSupportDir();
@@ -385,7 +387,21 @@ function findClaudeDesktop() {
     ];
     return candidates.find(p => fs.existsSync(p)) || null;
   }
+  if (isLinux) {
+    const candidates = [
+      path.join(os.homedir(), '.local', 'bin', 'claude-desktop'),
+      '/usr/bin/claude-desktop',
+      '/usr/local/bin/claude-desktop',
+      '/opt/claude-desktop/claude-desktop',
+    ];
+    return candidates.find(p => fs.existsSync(p)) || null;
+  }
   return null;
+}
+
+function linuxEnvFile() {
+  const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+  return path.join(xdgConfig, 'environment.d', 'ddbya.conf');
 }
 
 function setProxyEnv(port) {
@@ -399,6 +415,12 @@ function setProxyEnv(port) {
         { shell: true },
       );
     } catch {}
+  } else if (isLinux) {
+    try {
+      const f = linuxEnvFile();
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, `ANTHROPIC_BASE_URL=${url}\n`);
+    } catch {}
   }
 }
 
@@ -409,6 +431,8 @@ function unsetProxyEnv() {
     try {
       execSync('reg delete "HKCU\\Environment" /v ANTHROPIC_BASE_URL /f', { shell: true });
     } catch {}
+  } else if (isLinux) {
+    try { fs.unlinkSync(linuxEnvFile()); } catch {}
   }
 }
 
@@ -422,6 +446,10 @@ function isClaudeDesktopRunning() {
       const out = execSync('tasklist /FI "IMAGENAME eq claude.exe" /NH', { timeout: 3000 }).toString();
       return out.toLowerCase().includes('claude.exe');
     }
+    if (isLinux) {
+      const out = execSync('pgrep -x claude-desktop', { timeout: 3000 }).toString().trim();
+      return out.length > 0;
+    }
   } catch {}
   return false;
 }
@@ -430,6 +458,7 @@ function killClaudeDesktop() {
   try {
     if (isMac) execSync('pkill -x Claude', { timeout: 3000 });
     if (isWin) execSync('taskkill /IM claude.exe /F', { shell: true, timeout: 3000 });
+    if (isLinux) execSync('pkill -x claude-desktop', { timeout: 3000 });
   } catch {}
 }
 

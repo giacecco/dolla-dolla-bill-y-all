@@ -5,7 +5,7 @@ It's easy to recognise the cost effectiveness of using modern AI vs, for example
 dolla-dolla-bill-y-all provides two complementary tools:
 
 - **`ddbya`** — a zero-dependency CLI wrapper for Claude Code that logs token consumption per-project.
-- **ddbya Desktop** — a macOS/Windows menu bar / tray app that intercepts Claude Desktop traffic the same way.
+- **ddbya Desktop** — a macOS/Windows/Linux menu bar / tray app that intercepts Claude Desktop traffic the same way.
 
 Both log to the same JSONL format and `ddbya-report` aggregates them all into one report.
 
@@ -33,6 +33,29 @@ bash desktop/macos/build.sh
 Requirements: Node.js, npm, ImageMagick (`brew install imagemagick`), Xcode Command Line Tools.
 
 The script builds a signed and notarized universal binary, installs it to `/Applications/`, and launches it. The app sits in the menu bar as a Claude-asterisk-with-dollar icon.
+
+### ddbya Desktop (Windows)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File desktop\windows\build.ps1
+```
+
+Requirements: Node.js, npm, ImageMagick. The build is not Authenticode-signed.
+
+### ddbya Desktop (Linux)
+
+```sh
+cd dolla-dolla-bill-y-all
+bash desktop/linux/build.sh
+```
+
+Requirements: Node.js, npm, ImageMagick (`apt install imagemagick` / `dnf install ImageMagick`).
+
+Produces an AppImage (x64 and arm64) in `desktop/linux/dist/`. Make it executable and run it — no installation required.
+
+**Note on env var registration:** on systemd-based distros the proxy URL is written to `~/.config/environment.d/ddbya.conf` and picked up on next login. On non-systemd systems, use the "Launch Claude Desktop" menu item to start Claude Desktop with the proxy env var set directly, or set `ANTHROPIC_BASE_URL` manually in your shell RC.
+
+**Log root on Linux:** `~/.local/share/ddbya/` (or `$XDG_DATA_HOME/ddbya/`).
 
 ## Usage — CLI (Claude Code)
 
@@ -208,9 +231,11 @@ ddbya
 ```
 ddbya Desktop (tray app)
   ├─ starts local reverse proxy on 127.0.0.1:<persistent-port>
-  ├─ registers proxy URL via launchctl setenv ANTHROPIC_BASE_URL (macOS)
+  ├─ registers proxy URL via launchctl setenv (macOS) / registry (Windows) / environment.d (Linux)
   │   └─ Claude Desktop picks this up on next launch
-  ├─ logs token usage to ~/Library/Application Support/ddbya/Claude Desktop/.ddbya.d/
+  ├─ logs token usage to ~/Library/Application Support/ddbya/Claude Desktop/.ddbya.d/ (macOS)
+  │   %APPDATA%\ddbya\Claude Desktop\.ddbya.d\ (Windows)
+  │   ~/.local/share/ddbya/Claude Desktop/.ddbya.d/ (Linux)
   ├─ tray menu: Change Tags / Export Report / Launch Claude Desktop / Quit
   └─ on quit: unregisters env var, stops proxy
 ```
