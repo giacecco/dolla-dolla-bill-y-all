@@ -63,8 +63,11 @@ function loadState() {
 
 function saveState(updates) {
   const state = { ...loadState(), ...updates };
-  fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  const dir = path.dirname(STATE_FILE);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = STATE_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+  fs.renameSync(tmp, STATE_FILE);
   return state;
 }
 
