@@ -322,7 +322,12 @@ def retag(root, from_date, to_date, tag_filters, add_tags, remove_tags):
     for jsonl_path in paths:
         modified = False
         lines = []
-        with open(jsonl_path, encoding="utf-8") as f:
+        try:
+            fh = open(jsonl_path, encoding="utf-8")
+        except OSError as exc:
+            print(f"ddbya-report: skipped {jsonl_path}: {exc}", file=sys.stderr)
+            continue
+        with fh:
             for line in f:
                 stripped = line.strip()
                 if not stripped:
