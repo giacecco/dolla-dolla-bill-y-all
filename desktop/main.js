@@ -337,6 +337,7 @@ function logEntry(best, stream, logger, tagsGetter) {
   if (best.cacheRead) entry.cache_read_input_tokens = best.cacheRead;
   if (best.cacheCreate) entry.cache_creation_input_tokens = best.cacheCreate;
   logger.log(entry);
+  addSessionTokens(best.input + best.output + best.cacheRead + best.cacheCreate);
 }
 
 // ── Past-tags collection ──────────────────────────────────────────────────────
@@ -526,6 +527,44 @@ function openSettingsWindow() {
   settingsWin.on('closed', () => { settingsWin = null; });
 }
 
+// ── Tray token counter ────────────────────────────────────────────────────────
+
+let sessionTokenTotal = 0;   // true cumulative total (updated on each API response)
+let displayedTokens = 0;     // what's currently shown (animated toward sessionTokenTotal)
+let tokenAnimInterval = null;
+
+function formatTokens(n) {
+  if (n <= 0) return '';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+function applyTrayTitle() {
+  if (!tray) return;
+  const label = formatTokens(Math.round(displayedTokens));
+  tray.setTitle(label ? ` ${label}` : '', { fontType: 'monospacedDigit' });
+}
+
+function addSessionTokens(n) {
+  if (n <= 0) return;
+  sessionTokenTotal += n;
+  if (tokenAnimInterval) return; // already animating toward the new target
+  tokenAnimInterval = setInterval(() => {
+    const remaining = sessionTokenTotal - displayedTokens;
+    if (remaining <= 0) {
+      displayedTokens = sessionTokenTotal;
+      applyTrayTitle();
+      clearInterval(tokenAnimInterval);
+      tokenAnimInterval = null;
+      return;
+    }
+    // Ease: cover ~10 % of remaining distance per frame, minimum 1 token
+    displayedTokens += Math.max(1, Math.ceil(remaining / 10));
+    applyTrayTitle();
+  }, 50); // 20 fps
+}
+
 // ── Tray ──────────────────────────────────────────────────────────────────────
 
 let tray = null;
@@ -544,6 +583,7 @@ function buildMenu() {
     { label: 'Change Tags…', click: openTagsWindow },
     { label: 'Export Report (CSV)…', click: openReportWindow },
     { label: 'Open Session Log', click: () => { if (currentLogPath) shell.openPath(currentLogPath); } },
+    { label: 'Open Logs Folder', click: () => shell.openPath(CD_LOG_DIR) },
     { type: 'separator' },
     { label: 'Launch Claude Desktop', click: () => launchClaudeDesktop(currentPort) },
     { type: 'separator' },

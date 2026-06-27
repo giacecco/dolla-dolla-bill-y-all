@@ -73,6 +73,10 @@
     const exportBtn = document.getElementById('exportBtn');
     const status    = document.getElementById('status');
 
+    const today = new Date().toISOString().slice(0, 10);
+    fromDate.value = today;
+    toDate.value   = today;
+
     document.getElementById('cancelBtn').addEventListener('click', () => window.close());
 
     exportBtn.addEventListener('click', async () => {
