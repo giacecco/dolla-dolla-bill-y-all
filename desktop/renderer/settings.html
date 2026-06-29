@@ -132,6 +132,24 @@
   </div>
 </div>
 
+<div id="pricingSection" style="display:none;">
+  <hr>
+  <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px;">
+    <h3 style="font-size:13px;font-weight:600;margin:0;">Cost Display</h3>
+    <span style="font-size:10px;color:#bbb;">secret feature</span>
+  </div>
+  <p style="font-size:11px;color:#666;margin-bottom:10px;line-height:1.5;">Load a CSV with model pricing to show estimated cost in the menu bar instead of token counts. Requires columns: <code>Name</code>, <code>Input Price per 1M tokens</code>, <code>Output Price per 1M tokens</code>.</p>
+  <div class="row">
+    <span class="row-label">Pricing CSV</span>
+    <span class="mono-val" id="pricingPath" style="font-size:11px;">not set</span>
+    <button class="copy-btn" id="browseBtn">Browse…</button>
+  </div>
+  <div style="display:flex;justify-content:flex-end;margin-top:6px;">
+    <button id="clearPricingBtn" style="padding:4px 10px;font-size:11px;border-radius:4px;border:1px solid #e0b0b0;background:#fff;color:#c0392b;cursor:pointer;">Clear</button>
+  </div>
+  <div id="pricingStatus" style="font-size:11px;color:#27ae60;margin-top:4px;min-height:14px;"></div>
+</div>
+
 <div id="err"></div>
 <div class="actions">
   <button id="cancel">Cancel</button>
@@ -152,6 +170,16 @@
       document.getElementById('proxyUrl').textContent = 'error: ' + e.message;
       document.getElementById('err').textContent = 'Failed to load settings: ' + e.message;
     }
+    // Auto-reveal pricing section if already configured
+    try {
+      const p = await window.ddbya.getPricingPath();
+      if (p) {
+        document.getElementById('pricingSection').style.display = '';
+        document.getElementById('pricingPath').textContent = p;
+        document.getElementById('pricingStatus').textContent = 'Cost display active.';
+        document.getElementById('pricingStatus').style.color = '#27ae60';
+      }
+    } catch {}
   }
 
   document.getElementById('copyBtn').addEventListener('click', async () => {
@@ -189,6 +217,60 @@
   });
 
   document.getElementById('cancel').addEventListener('click', () => window.ddbya.closeWindow());
+
+  // Secret: click the "Settings" heading 5 times within 3 seconds to reveal pricing
+  let titleClicks = 0, titleTimer = null;
+  document.querySelector('h2').style.cursor = 'default';
+  document.querySelector('h2').addEventListener('click', () => {
+    titleClicks++;
+    clearTimeout(titleTimer);
+    if (titleClicks >= 5) {
+      titleClicks = 0;
+      document.getElementById('pricingSection').style.display = '';
+      loadPricingPath();
+    } else {
+      titleTimer = setTimeout(() => { titleClicks = 0; }, 3000);
+    }
+  });
+
+  async function loadPricingPath() {
+    try {
+      const p = await window.ddbya.getPricingPath();
+      document.getElementById('pricingPath').textContent = p || 'not set';
+      if (p) {
+        document.getElementById('pricingStatus').textContent = 'Cost display active.';
+        document.getElementById('pricingStatus').style.color = '#27ae60';
+      }
+    } catch {}
+  }
+
+  document.getElementById('browseBtn').addEventListener('click', async () => {
+    const status = document.getElementById('pricingStatus');
+    status.style.color = '#888';
+    status.textContent = 'Opening…';
+    const result = await window.ddbya.openPricingDialog();
+    if (result.ok) {
+      document.getElementById('pricingPath').textContent = result.path;
+      status.style.color = '#27ae60';
+      status.textContent = `Loaded ${result.modelCount} model${result.modelCount !== 1 ? 's' : ''}. Tray will now show estimated cost.`;
+    } else if (result.error) {
+      status.style.color = '#c0392b';
+      status.textContent = result.error;
+    } else {
+      status.textContent = '';
+    }
+  });
+
+  document.getElementById('clearPricingBtn').addEventListener('click', async () => {
+    await window.ddbya.clearPricing();
+    document.getElementById('pricingPath').textContent = 'not set';
+    const status = document.getElementById('pricingStatus');
+    status.style.color = '#888';
+    status.textContent = '';
+    // Hide the section — it must be unlocked again to re-enable
+    document.getElementById('pricingSection').style.display = 'none';
+    titleClicks = 0;
+  });
 
   load();
 </script>

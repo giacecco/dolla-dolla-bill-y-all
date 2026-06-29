@@ -91,6 +91,16 @@ ddbya-report --help   (no folder required)
 - A spinner is shown on stderr while data is being read (only when stderr is a TTY).
 - Zero dependencies — Python 3 standard library only.
 
+## Building and running
+
+To build and run the desktop app on macOS, use the dedicated build script:
+
+```bash
+bash desktop/macos/build.sh
+```
+
+This is the only supported build command on macOS — do not use `npm start` or `npx electron .` directly. The script stops any running instance, packages a universal binary, signs it, copies it to `/Applications/`, and launches it.
+
 ## Desktop app
 
 `desktop/` contains an Electron tray app that intercepts Claude Desktop's API traffic the same way `ddbya` wraps Claude Code.
@@ -198,6 +208,13 @@ Linux signing is not configured. AppImages can be signed with `gpg` but this is 
 
 - When a new Claude Code version is released, verify that none of ddbya's own short flags (`-t`) or long flags (`--tag`, `--list-tags`, `--help`) conflict with new flags introduced by Claude Code itself. A conflict would shadow or consume a flag meant for the wrapped `claude` process.
 - When the Electron app's proxy port changes (because the default port is in use), the user must restart Claude Desktop to pick up the new URL. The app shows a warning dialog when this happens.
+
+## Secret features
+
+Some features are intentionally hidden from users who don't know to look for them. Do not document them in README files, user-facing help text, or `--help` output.
+
+- **`ddbya-report --dollars <csv-path>`** — adds a Cost (USD) column to reports by loading a pricing CSV. The `--dollars` flag must not appear in the `--help` output or any documentation.
+- **ddbya Desktop cost display** — in the Settings window, clicking the "Settings" heading 5 times reveals a hidden section to load a pricing CSV. The tray then shows estimated cost (e.g. `$0.03`) instead of token counts, with a ⚠ prefix when some models are not in the CSV. This must not be mentioned in the README or any visible UI text.
 
 ## Conventions
 

@@ -249,6 +249,73 @@ function retag(root, fromDate, toDate, tagFilters, addTags, removeTags) {
   return { modifiedEntries: totalModified, modifiedFiles: filesModified };
 }
 
+// ── Pricing ───────────────────────────────────────────────────────────────────
+
+function parseCSVLine(line) {
+  const cols = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') { inQuotes = !inQuotes; continue; }
+    if (ch === ',' && !inQuotes) { cols.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  cols.push(cur);
+  return cols;
+}
+
+function loadPricingCsv(csvPath) {
+  try {
+    const lines = fs.readFileSync(csvPath, 'utf8').split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length < 2) return null;
+    const header = parseCSVLine(lines[0]).map(h => h.trim().toLowerCase());
+    const ci = name => header.indexOf(name.toLowerCase());
+    const iName = ci('name');
+    const iIn   = ci('input price per 1m tokens');
+    const iOut  = ci('output price per 1m tokens');
+    const iCR   = ci('cache read per 1m tokens');
+    const iCW   = ci('cache write per 1m tokens');
+    if (iName === -1 || iIn === -1 || iOut === -1) return null;
+    const parseNum = (cols, i) => { if (i === -1) return 0; const v = (cols[i] || '').trim().replace(/[$,\s]/g, ''); return (v === '-' || !v || v === 'n/a') ? 0 : (parseFloat(v) || 0); };
+    const map = new Map();
+    for (const line of lines.slice(1)) {
+      const cols = parseCSVLine(line);
+      const name = (cols[iName] || '').trim().toLowerCase();
+      if (!name) continue;
+      map.set(name, { inputPerMtok: parseNum(cols, iIn), outputPerMtok: parseNum(cols, iOut), cacheReadPerMtok: parseNum(cols, iCR), cacheWritePerMtok: parseNum(cols, iCW) });
+    }
+    return map.size ? map : null;
+  } catch { return null; }
+}
+
+function lookupPricingFromMap(model, pricingData) {
+  if (!pricingData || !model) return null;
+  const m = model.toLowerCase();
+  if (pricingData.has(m)) return pricingData.get(m);
+  const dot = m.indexOf('.');
+  if (dot !== -1 && pricingData.has(m.slice(dot + 1))) return pricingData.get(m.slice(dot + 1));
+  for (const [key, val] of pricingData) {
+    const base = key.includes('.') ? key.slice(key.indexOf('.') + 1) : key;
+    if (base.startsWith(m) || m.startsWith(base)) return val;
+  }
+  return null;
+}
+
+function computeRowCost(row, pricingData) {
+  const p = lookupPricingFromMap(row.model, pricingData);
+  if (!p) return null;
+  return (row.input_tokens * p.inputPerMtok + row.output_tokens * p.outputPerMtok +
+          row.cache_read * p.cacheReadPerMtok + row.cache_create * p.cacheWritePerMtok) / 1_000_000;
+}
+
+function fmtCost(cost) {
+  if (cost === null || cost === undefined) return '-';
+  if (cost >= 1_000_000) return `$${(cost / 1_000_000).toFixed(1)}M`;
+  if (cost >= 1_000) return `$${(cost / 1_000).toFixed(1)}K`;
+  return `$${cost.toFixed(2)}`;
+}
+
 // ── Aggregation ───────────────────────────────────────────────────────────────
 
 function aggregate(entries) {
@@ -278,9 +345,10 @@ function fmt(n) {
   return n.toLocaleString('en-US');
 }
 
-function colWidths(rows) {
+function colWidths(rows, pricingData) {
   const showTags = rows.some(r => r.tags && r.tags.length > 0);
   const showModel = rows.some(r => r.model);
+  const showCost = !!pricingData;
   const joinTags = tags => tags && tags.length ? tags.join(' | ') : '';
 
   const extraLabels = ['(subtotal)', 'TOTAL'];
@@ -293,6 +361,7 @@ function colWidths(rows) {
   const creates = rows.map(r => fmt(r.cache_create));
   const totals = rows.map(r => fmt(r.input_tokens + r.cache_read + r.cache_create));
   const outputs = rows.map(r => fmt(r.output_tokens));
+  const costs = showCost ? rows.map(r => fmtCost(computeRowCost(r, pricingData))) : [];
 
   function lw(header, values) { return -(Math.max(header.length, values.length ? Math.max(...values.map(s => s.length)) : 0)); }
   function rw(header, values) { return Math.max(header.length, values.length ? Math.max(...values.map(s => s.length)) : 0); }
@@ -307,10 +376,11 @@ function colWidths(rows) {
     ['Total Input', rw('Total Input', totals)],
     ['Output Tokens', rw('Output Tokens', outputs)],
   );
+  if (showCost) cols.push(['Cost (USD)', rw('Cost (USD)', costs)]);
   if (showTags) cols.push(['Tags', lw('Tags', allTags)]);
 
   const byName = Object.fromEntries(cols.map(([label, width]) => [label, width]));
-  return { cols, byName, showTags, showModel };
+  return { cols, byName, showTags, showModel, showCost };
 }
 
 function buildRow(values, byName) {
@@ -327,8 +397,9 @@ function dateStr(d) { return d.toISOString().slice(0, 10); }
 
 /**
  * Print a formatted token-usage table to process.stdout.
+ * Pass pricingData (Map from loadPricingCsv) to add a Cost (USD) column.
  */
-function report(rows, fromDate, toDate) {
+function report(rows, fromDate, toDate, pricingData) {
   let header;
   if (!fromDate) {
     header = 'Token Usage Report — all data';
@@ -345,7 +416,7 @@ function report(rows, fromDate, toDate) {
 
   if (!rows.length) { process.stdout.write('No usage data found.\n'); return; }
 
-  const { cols, byName, showTags, showModel } = colWidths(rows);
+  const { cols, byName, showTags, showModel, showCost } = colWidths(rows, pricingData);
   const joinTags = tags => tags && tags.length ? tags.join(' | ') : '';
 
   const headerLine = cols.map(([label, width]) => width < 0 ? label.padEnd(-width) : label.padStart(width)).join('  ');
@@ -353,8 +424,8 @@ function report(rows, fromDate, toDate) {
   process.stdout.write(headerLine + '\n' + separator + '\n');
 
   let lastProject = null;
-  let projInput = 0, projOutput = 0, projRead = 0, projCreate = 0, projReqs = 0;
-  let totInput = 0, totOutput = 0, totRead = 0, totCreate = 0, totReqs = 0;
+  let projInput = 0, projOutput = 0, projRead = 0, projCreate = 0, projReqs = 0, projCost = 0;
+  let totInput = 0, totOutput = 0, totRead = 0, totCreate = 0, totReqs = 0, totCost = 0;
 
   function flushProject() {
     if (lastProject !== null && projReqs > 0 && lastProject !== CLAUDE_DESKTOP_PROJECT) {
@@ -365,14 +436,16 @@ function report(rows, fromDate, toDate) {
         [fmt(projRead), 'Cache Read'], [fmt(projCreate), 'Cache Create'],
         [fmt(projInput + projRead + projCreate), 'Total Input'], [fmt(projOutput), 'Output Tokens'],
       );
+      if (showCost) vals.push([fmtCost(projCost), 'Cost (USD)']);
       process.stdout.write(buildRow(vals, byName) + '\n\n');
     }
-    projInput = projOutput = projRead = projCreate = projReqs = 0;
+    projInput = projOutput = projRead = projCreate = projReqs = projCost = 0;
   }
 
   for (const r of rows) {
     if (r.project !== lastProject) { flushProject(); lastProject = r.project; }
 
+    const rowCost = showCost ? computeRowCost(r, pricingData) : null;
     const vals = [[r.project, 'Project']];
     if (showModel) vals.push([r.model || '', 'Model']);
     vals.push(
@@ -380,13 +453,16 @@ function report(rows, fromDate, toDate) {
       [fmt(r.cache_read), 'Cache Read'], [fmt(r.cache_create), 'Cache Create'],
       [fmt(r.input_tokens + r.cache_read + r.cache_create), 'Total Input'], [fmt(r.output_tokens), 'Output Tokens'],
     );
+    if (showCost) vals.push([fmtCost(rowCost), 'Cost (USD)']);
     if (showTags) vals.push([joinTags(r.tags), 'Tags']);
     process.stdout.write(buildRow(vals, byName) + '\n');
 
     projInput += r.input_tokens; projOutput += r.output_tokens;
     projRead += r.cache_read; projCreate += r.cache_create; projReqs += r.requests;
+    if (rowCost !== null) projCost += rowCost;
     totInput += r.input_tokens; totOutput += r.output_tokens;
     totRead += r.cache_read; totCreate += r.cache_create; totReqs += r.requests;
+    if (rowCost !== null) totCost += rowCost;
   }
   flushProject();
 
@@ -397,6 +473,7 @@ function report(rows, fromDate, toDate) {
     [fmt(totRead), 'Cache Read'], [fmt(totCreate), 'Cache Create'],
     [fmt(totInput + totRead + totCreate), 'Total Input'], [fmt(totOutput), 'Output Tokens'],
   );
+  if (showCost) totVals.push([fmtCost(totCost), 'Cost (USD)']);
   process.stdout.write(buildRow(totVals, byName) + '\n');
 }
 
@@ -413,14 +490,17 @@ function csvLine(fields) { return fields.map(csvEscape).join(',') + '\n'; }
 
 /**
  * Return a CSV string for the given aggregated rows.
+ * Pass pricingData (Map from loadPricingCsv) to add a Cost (USD) column.
  */
-function csvReport(rows) {
+function csvReport(rows, pricingData) {
   if (!rows.length) return '';
   const showTags = rows.some(r => r.tags && r.tags.length > 0);
   const showModel = rows.some(r => r.model);
+  const showCost = !!pricingData;
   const headers = ['Project'];
   if (showModel) headers.push('Model');
   headers.push('Reqs', 'Input (base)', 'Cache Read', 'Cache Create', 'Total Input', 'Output Tokens');
+  if (showCost) headers.push('Cost (USD)');
   if (showTags) headers.push('Tags');
 
   let out = csvLine(headers);
@@ -429,6 +509,10 @@ function csvReport(rows) {
     const row = [r.project];
     if (showModel) row.push(r.model || '');
     row.push(r.requests, r.input_tokens, r.cache_read, r.cache_create, totalInput, r.output_tokens);
+    if (showCost) {
+      const cost = computeRowCost(r, pricingData);
+      row.push(cost !== null ? cost.toFixed(6) : '');
+    }
     if (showTags) row.push(r.tags && r.tags.length ? r.tags.join(' | ') : '');
     out += csvLine(row);
   }
@@ -444,4 +528,5 @@ module.exports = {
   fmt,
   report,
   csvReport,
+  loadPricingCsv,
 };

@@ -125,7 +125,14 @@ function logEntry(best, stream, logger, tagsGetter, onTokens) {
   if (best.cacheRead) entry.cache_read_input_tokens = best.cacheRead;
   if (best.cacheCreate) entry.cache_creation_input_tokens = best.cacheCreate;
   logger.log(entry);
-  if (onTokens) onTokens(best.input + best.output + best.cacheRead + best.cacheCreate);
+  if (onTokens) onTokens({
+    total: best.input + best.output + best.cacheRead + best.cacheCreate,
+    model: best.model,
+    input: best.input,
+    output: best.output,
+    cacheRead: best.cacheRead,
+    cacheCreate: best.cacheCreate,
+  });
 }
 
 function processLine(line, best) {

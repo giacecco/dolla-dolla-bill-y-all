@@ -23,6 +23,7 @@ const {
   aggregate,
   report,
   csvReport,
+  loadPricingCsv,
 } = require(path.join(__dirname, 'report-core.js'));
 
 const HELP = `\
@@ -91,6 +92,7 @@ function parseArgs() {
     models: [],
     json: false,
     csv: false,
+    dollarsPath: null,
   };
 
   let i = 1;
@@ -134,6 +136,8 @@ function parseArgs() {
       params.json = true; i++;
     } else if (arg === '--csv') {
       params.csv = true; i++;
+    } else if (arg === '--dollars' && i + 1 < args.length) {
+      params.dollarsPath = args[++i]; i++;
     } else {
       process.stderr.write(`Unknown argument: ${arg}\n`); process.exit(1);
     }
@@ -201,6 +205,15 @@ function main() {
   const entries = collectEntries(params.root, fromDate, toDate, params.tags, params.models);
   const rows = aggregate(entries);
 
+  let pricingData = null;
+  if (params.dollarsPath) {
+    pricingData = loadPricingCsv(params.dollarsPath);
+    if (!pricingData) {
+      process.stderr.write(`ddbya-report: could not load pricing CSV: ${params.dollarsPath}\n`);
+      process.exit(1);
+    }
+  }
+
   if (params.json) {
     const output = {
       from: fromDate ? fromDate.toISOString().slice(0, 10) : null,
@@ -209,9 +222,9 @@ function main() {
     };
     process.stdout.write(JSON.stringify(output) + '\n');
   } else if (params.csv) {
-    process.stdout.write(csvReport(rows));
+    process.stdout.write(csvReport(rows, pricingData));
   } else {
-    report(rows, fromDate, toDate);
+    report(rows, fromDate, toDate, pricingData);
   }
 }
 

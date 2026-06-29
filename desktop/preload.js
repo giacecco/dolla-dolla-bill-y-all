@@ -12,4 +12,7 @@ contextBridge.exposeInMainWorld('ddbya', {
   saveSettings:    (s)          => ipcRenderer.invoke('save-settings', s),
   copyToClipboard:  (text)       => ipcRenderer.invoke('copy-to-clipboard', text),
   closeWindow:      ()           => ipcRenderer.invoke('close-window'),
+  getPricingPath:   ()           => ipcRenderer.invoke('get-pricing-path'),
+  openPricingDialog: ()          => ipcRenderer.invoke('open-pricing-dialog'),
+  clearPricing:     ()           => ipcRenderer.invoke('clear-pricing'),
 });

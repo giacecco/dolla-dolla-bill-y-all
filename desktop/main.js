@@ -267,7 +267,10 @@ function exportCsvReport(from, to) {
   try {
     const entries = core.collectEntries(root, fromDate, toDate);
     const rows = core.aggregate(entries);
-    return { ok: true, csv: core.csvReport(rows) };
+    let reportPricing = null;
+    const savedPricingPath = loadState().pricingCsvPath;
+    if (savedPricingPath && core.loadPricingCsv) reportPricing = core.loadPricingCsv(savedPricingPath);
+    return { ok: true, csv: core.csvReport(rows, reportPricing) };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -321,10 +324,79 @@ function openSettingsWindow() {
   settingsWin.on('closed', () => { settingsWin = null; });
 }
 
+// ── Pricing ───────────────────────────────────────────────────────────────────
+
+let pricingData = null; // Map<lowerModelName, {inputPerMtok, outputPerMtok, cacheReadPerMtok, cacheWritePerMtok}>
+
+function parseCSVLine(line) {
+  const cols = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') { inQuotes = !inQuotes; continue; }
+    if (ch === ',' && !inQuotes) { cols.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  cols.push(cur);
+  return cols;
+}
+
+function loadPricingCsv(csvPath) {
+  try {
+    const lines = fs.readFileSync(csvPath, 'utf8').split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length < 2) return null;
+    const header = parseCSVLine(lines[0]).map(h => h.trim().toLowerCase());
+    const ci = name => header.indexOf(name.toLowerCase());
+    const iName = ci('name');
+    const iIn   = ci('input price per 1m tokens');
+    const iOut  = ci('output price per 1m tokens');
+    const iCR   = ci('cache read per 1m tokens');
+    const iCW   = ci('cache write per 1m tokens');
+    if (iName === -1 || iIn === -1 || iOut === -1) return null;
+    const parseNum = (cols, i) => { if (i === -1) return 0; const v = (cols[i] || '').trim().replace(/[$,\s]/g, ''); return (v === '-' || !v || v === 'n/a') ? 0 : (parseFloat(v) || 0); };
+    const map = new Map();
+    for (const line of lines.slice(1)) {
+      const cols = parseCSVLine(line);
+      const name = (cols[iName] || '').trim().toLowerCase();
+      if (!name) continue;
+      map.set(name, { inputPerMtok: parseNum(cols, iIn), outputPerMtok: parseNum(cols, iOut), cacheReadPerMtok: parseNum(cols, iCR), cacheWritePerMtok: parseNum(cols, iCW) });
+    }
+    return map.size ? map : null;
+  } catch { return null; }
+}
+
+function lookupPricing(model) {
+  if (!pricingData || !model) return null;
+  const m = model.toLowerCase();
+  // 1. Exact match
+  if (pricingData.has(m)) return pricingData.get(m);
+  // 2. Strip provider prefix from model (e.g. "anthropic.claude-..." → "claude-...")
+  const dot = m.indexOf('.');
+  if (dot !== -1 && pricingData.has(m.slice(dot + 1))) return pricingData.get(m.slice(dot + 1));
+  // 3. Strip provider prefix from CSV key, then check if one is a prefix of the other.
+  //    Handles e.g. "claude-haiku-4-5-20251001" matching "anthropic.claude-haiku-4-5-20251001-v1:0"
+  for (const [key, val] of pricingData) {
+    const base = key.includes('.') ? key.slice(key.indexOf('.') + 1) : key;
+    if (base.startsWith(m) || m.startsWith(base)) return val;
+  }
+  return null;
+}
+
+function computeCost(info) {
+  const p = lookupPricing(info.model);
+  if (!p) return null;
+  return (info.input * p.inputPerMtok + info.output * p.outputPerMtok +
+          info.cacheRead * p.cacheReadPerMtok + info.cacheCreate * p.cacheWritePerMtok) / 1_000_000;
+}
+
 // ── Tray token counter ────────────────────────────────────────────────────────
 
 let sessionTokenTotal = 0;   // true cumulative total (updated on each API response)
 let displayedTokens = 0;     // what's currently shown (animated toward sessionTokenTotal)
+let sessionCostTotal = 0;    // cumulative estimated cost when pricing CSV is active
+let displayedCost = 0;
+let lastCallUnpriced = false; // true if the most recent API call used an unrecognised model
 let tokenAnimInterval = null;
 
 function formatTokens(n) {
@@ -334,32 +406,60 @@ function formatTokens(n) {
   return String(n);
 }
 
+function formatCost(cost) {
+  if (cost <= 0) return '';
+  if (cost >= 1_000_000) return `$${(cost / 1_000_000).toFixed(1)}M`;
+  if (cost >= 1_000) return `$${(cost / 1_000).toFixed(1)}K`;
+  return `$${cost.toFixed(2)}`;
+}
+
 function applyTrayTitle() {
   if (!tray) return;
-  const label = formatTokens(Math.round(displayedTokens));
+  const useCost = pricingData !== null;
+  let label;
+  if (useCost) {
+    const costStr = sessionCostTotal > 0 ? formatCost(displayedCost) : '$0.00';
+    label = lastCallUnpriced ? `⚠ ${costStr}` : costStr;
+  } else {
+    label = formatTokens(Math.round(displayedTokens));
+  }
   if (isMac) tray.setTitle(label ? ` ${label}` : '', { fontType: 'monospacedDigit' });
-  const tip = label
-    ? `ddbya Desktop — port ${currentPort}\n${label} tokens this session`
-    : `ddbya Desktop — port ${currentPort}`;
+  let tip = `ddbya Desktop — port ${currentPort}`;
+  if (useCost) {
+    const tokStr = formatTokens(Math.round(sessionTokenTotal));
+    tip += `\n${sessionCostTotal > 0 ? formatCost(sessionCostTotal) : '$0.00'} estimated cost this session`;
+    if (tokStr) tip += ` (${tokStr} tokens)`;
+    if (lastCallUnpriced) tip += '\n⚠ last API call used an unrecognised model';
+  } else if (label) {
+    tip += `\n${label} tokens this session`;
+  }
   tray.setToolTip(tip);
 }
 
-function addSessionTokens(n) {
+function addSessionTokens(info) {
+  const n = typeof info === 'number' ? info : info.total;
   if (n <= 0) return;
   sessionTokenTotal += n;
-  if (tokenAnimInterval) return; // already animating toward the new target
+  if (pricingData && typeof info === 'object') {
+    const cost = computeCost(info);
+    if (cost !== null) { sessionCostTotal += cost; lastCallUnpriced = false; }
+    else lastCallUnpriced = true;
+  }
+  if (tokenAnimInterval) return; // already animating
   tokenAnimInterval = setInterval(() => {
-    const remaining = sessionTokenTotal - displayedTokens;
-    if (remaining <= 0) {
+    const tokLeft = sessionTokenTotal - displayedTokens;
+    if (tokLeft > 0) displayedTokens += Math.max(1, Math.ceil(tokLeft / 10));
+    else displayedTokens = sessionTokenTotal;
+    const costLeft = sessionCostTotal - displayedCost;
+    if (costLeft > 1e-9) displayedCost += costLeft / 10;
+    else displayedCost = sessionCostTotal;
+    applyTrayTitle();
+    if (displayedTokens >= sessionTokenTotal && displayedCost >= sessionCostTotal - 1e-9) {
       displayedTokens = sessionTokenTotal;
-      applyTrayTitle();
+      displayedCost = sessionCostTotal;
       clearInterval(tokenAnimInterval);
       tokenAnimInterval = null;
-      return;
     }
-    // Ease: cover ~10 % of remaining distance per frame, minimum 1 token
-    displayedTokens += Math.max(1, Math.ceil(remaining / 10));
-    applyTrayTitle();
   }, 50); // 20 fps
 }
 
@@ -454,7 +554,7 @@ ipcMain.handle('save-settings', async (_event, settings) => {
     proxySockets.clear();
     await new Promise(resolve => proxyServer.close(resolve));
     proxyOpts = { disableBeta: next.disableBeta };
-    proxyServer = buildProxy(next.upstreamBaseUrl, tokenLogger, () => currentTags, proxyOpts, n => addSessionTokens(n));
+    proxyServer = buildProxy(next.upstreamBaseUrl, tokenLogger, () => currentTags, proxyOpts, info => addSessionTokens(info));
     proxyServer.on('connection', s => { proxySockets.add(s); s.on('close', () => proxySockets.delete(s)); });
     await new Promise((resolve, reject) => {
       proxyServer.once('error', reject);
@@ -474,6 +574,48 @@ ipcMain.handle('close-window', (event) => {
 
 ipcMain.handle('export-csv', async (_event, { from, to }) => {
   return exportCsvReport(from || null, to || null);
+});
+
+ipcMain.handle('get-pricing-path', () => loadState().pricingCsvPath || null);
+
+ipcMain.handle('open-pricing-dialog', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    title: 'Select Pricing CSV',
+    filters: [{ name: 'CSV files', extensions: ['csv'] }],
+    properties: ['openFile'],
+  });
+  if (canceled || !filePaths.length) return { ok: false };
+  const csvPath = filePaths[0];
+  const data = loadPricingCsv(csvPath);
+  if (!data) return { ok: false, error: 'Could not parse pricing data — check the file has Name, Input Price per 1M tokens, and Output Price per 1M tokens columns.' };
+  pricingData = data;
+  saveState({ pricingCsvPath: csvPath });
+
+  // Recompute session cost from all entries logged so far this session
+  sessionCostTotal = 0;
+  if (tokenLogger) {
+    for (const entry of tokenLogger._entries) {
+      const cost = computeCost({
+        model: entry.model || '',
+        input: entry.input_tokens || 0,
+        output: entry.output_tokens || 0,
+        cacheRead: entry.cache_read_input_tokens || 0,
+        cacheCreate: entry.cache_creation_input_tokens || 0,
+      });
+      if (cost !== null) sessionCostTotal += cost;
+    }
+  }
+  displayedCost = sessionCostTotal;
+  applyTrayTitle();
+
+  return { ok: true, path: csvPath, modelCount: data.size };
+});
+
+ipcMain.handle('clear-pricing', () => {
+  pricingData = null;
+  lastCallUnpriced = false;
+  saveState({ pricingCsvPath: null });
+  applyTrayTitle();
 });
 
 ipcMain.handle('save-csv', async (_event, { csv: csvContent, defaultName }) => {
@@ -534,10 +676,14 @@ app.whenReady().then(async () => {
   // Load saved tags
   currentTags = loadState().tags || [];
 
+  // Load pricing CSV if previously configured (session starts empty so no retroactive pass needed yet)
+  const savedPricingPath = loadState().pricingCsvPath;
+  if (savedPricingPath) pricingData = loadPricingCsv(savedPricingPath);
+
   // Start proxy — use saved upstream base URL, not env var
   const { upstreamBaseUrl: upstream, disableBeta } = loadSettings();
   proxyOpts = { disableBeta };
-  proxyServer = buildProxy(upstream, tokenLogger, () => currentTags, proxyOpts, n => addSessionTokens(n));
+  proxyServer = buildProxy(upstream, tokenLogger, () => currentTags, proxyOpts, info => addSessionTokens(info));
   proxyServer.on('connection', s => { proxySockets.add(s); s.on('close', () => proxySockets.delete(s)); });
   try {
     await new Promise((resolve, reject) => {
