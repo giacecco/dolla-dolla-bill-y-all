@@ -1,6 +1,6 @@
 {
   "name": "ddbya-desktop",
-  "version": "1.0.0",
+  "version": "0.0.2606291929",
   "description": "ddbya Desktop — token usage monitor for Claude Desktop",
   "author": "Gianfranco Cecconi",
   "main": "main.js",

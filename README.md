@@ -11,51 +11,7 @@ Both log to the same JSONL format and `ddbya-report` aggregates them all into on
 
 ## Installation
 
-### CLI tools
-
-```sh
-# clone and link into your PATH
-git clone https://github.com/giacecco/dolla-dolla-bill-y-all.git
-ln -s "$(pwd)/dolla-dolla-bill-y-all/ddbya" \
-      "$(pwd)/dolla-dolla-bill-y-all/ddbya-report" \
-      /usr/local/bin/
-```
-
-Requires Node.js. No npm packages needed — built-in modules only.
-
-### ddbya Desktop (macOS)
-
-```sh
-cd dolla-dolla-bill-y-all
-bash desktop/macos/build.sh
-```
-
-Requirements: Node.js, npm, ImageMagick (`brew install imagemagick`), Xcode Command Line Tools.
-
-The script builds a signed and notarized universal binary, installs it to `/Applications/`, and launches it. The app sits in the menu bar as a Claude-asterisk-with-dollar icon.
-
-### ddbya Desktop (Windows)
-
-```powershell
-powershell -ExecutionPolicy Bypass -File desktop\windows\build.ps1
-```
-
-Requirements: Node.js, npm, ImageMagick. The build is not Authenticode-signed.
-
-### ddbya Desktop (Linux)
-
-```sh
-cd dolla-dolla-bill-y-all
-bash desktop/linux/build.sh
-```
-
-Requirements: Node.js, npm, ImageMagick (`apt install imagemagick` / `dnf install ImageMagick`).
-
-Produces an AppImage (x64 and arm64) in `desktop/linux/dist/`. Make it executable and run it — no installation required.
-
-**Note on env var registration:** on systemd-based distros the proxy URL is written to `~/.config/environment.d/ddbya.conf` and picked up on next login. On non-systemd systems, use the "Launch Claude Desktop" menu item to start Claude Desktop with the proxy env var set directly, or set `ANTHROPIC_BASE_URL` manually in your shell RC.
-
-**Log root on Linux:** `~/.local/share/ddbya/` (or `$XDG_DATA_HOME/ddbya/`).
+See [INSTALL.md](INSTALL.md).
 
 ## Usage — CLI (Claude Code)
 
@@ -78,8 +34,6 @@ Launch **ddbya Desktop** from `/Applications` (or from the menu bar on subsequen
 1. Starts a local proxy and registers it with the OS so Claude Desktop uses it.
 2. Intercepts all API traffic, logging tokens to `~/Library/Application Support/ddbya/Claude Desktop/.ddbya.d/`.
 3. Provides a tray menu to **change tags**, **export a CSV report**, or **launch Claude Desktop**.
-
-> **First-time setup:** after starting ddbya Desktop for the first time, quit and relaunch Claude Desktop so it picks up the proxy URL.
 
 ### Directory layout
 
