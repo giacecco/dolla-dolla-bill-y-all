@@ -268,8 +268,9 @@ function exportCsvReport(from, to) {
     const entries = core.collectEntries(root, fromDate, toDate);
     const rows = core.aggregate(entries);
     let reportPricing = null;
-    const savedPricingPath = loadState().pricingCsvPath;
-    if (savedPricingPath && core.loadPricingCsv) reportPricing = core.loadPricingCsv(savedPricingPath);
+    const savedPricingState = loadState();
+    if (savedPricingState.pricingCsvPath && core.loadPricingCsv) reportPricing = core.loadPricingCsv(savedPricingState.pricingCsvPath);
+    if (!reportPricing && savedPricingState.pricingCsvContent && core.parsePricingCsvFromText) reportPricing = core.parsePricingCsvFromText(savedPricingState.pricingCsvContent);
     return { ok: true, csv: core.csvReport(rows, reportPricing) };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -342,9 +343,9 @@ function parseCSVLine(line) {
   return cols;
 }
 
-function loadPricingCsv(csvPath) {
+function parsePricingCsvFromText(text) {
   try {
-    const lines = fs.readFileSync(csvPath, 'utf8').split('\n').map(l => l.trim()).filter(Boolean);
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
     if (lines.length < 2) return null;
     const header = parseCSVLine(lines[0]).map(h => h.trim().toLowerCase());
     const ci = name => header.indexOf(name.toLowerCase());
@@ -364,6 +365,10 @@ function loadPricingCsv(csvPath) {
     }
     return map.size ? map : null;
   } catch { return null; }
+}
+
+function loadPricingCsv(csvPath) {
+  try { return parsePricingCsvFromText(fs.readFileSync(csvPath, 'utf8')); } catch { return null; }
 }
 
 function lookupPricing(model) {
@@ -586,10 +591,12 @@ ipcMain.handle('open-pricing-dialog', async () => {
   });
   if (canceled || !filePaths.length) return { ok: false };
   const csvPath = filePaths[0];
-  const data = loadPricingCsv(csvPath);
+  let rawText;
+  try { rawText = fs.readFileSync(csvPath, 'utf8'); } catch { return { ok: false, error: 'Could not read the selected file.' }; }
+  const data = parsePricingCsvFromText(rawText);
   if (!data) return { ok: false, error: 'Could not parse pricing data — check the file has Name, Input Price per 1M tokens, and Output Price per 1M tokens columns.' };
   pricingData = data;
-  saveState({ pricingCsvPath: csvPath });
+  saveState({ pricingCsvPath: csvPath, pricingCsvContent: rawText });
 
   // Recompute session cost from all entries logged so far this session
   sessionCostTotal = 0;
@@ -614,7 +621,7 @@ ipcMain.handle('open-pricing-dialog', async () => {
 ipcMain.handle('clear-pricing', () => {
   pricingData = null;
   lastCallUnpriced = false;
-  saveState({ pricingCsvPath: null });
+  saveState({ pricingCsvPath: null, pricingCsvContent: null });
   applyTrayTitle();
 });
 
@@ -676,9 +683,10 @@ app.whenReady().then(async () => {
   // Load saved tags
   currentTags = loadState().tags || [];
 
-  // Load pricing CSV if previously configured (session starts empty so no retroactive pass needed yet)
-  const savedPricingPath = loadState().pricingCsvPath;
-  if (savedPricingPath) pricingData = loadPricingCsv(savedPricingPath);
+  // Load pricing CSV if previously configured; fall back to stored content if original file is gone
+  const savedState = loadState();
+  if (savedState.pricingCsvPath) pricingData = loadPricingCsv(savedState.pricingCsvPath);
+  if (!pricingData && savedState.pricingCsvContent) pricingData = parsePricingCsvFromText(savedState.pricingCsvContent);
 
   // Start proxy — use saved upstream base URL, not env var
   const { upstreamBaseUrl: upstream, disableBeta } = loadSettings();

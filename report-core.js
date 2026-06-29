@@ -265,9 +265,9 @@ function parseCSVLine(line) {
   return cols;
 }
 
-function loadPricingCsv(csvPath) {
+function parsePricingCsvFromText(text) {
   try {
-    const lines = fs.readFileSync(csvPath, 'utf8').split('\n').map(l => l.trim()).filter(Boolean);
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
     if (lines.length < 2) return null;
     const header = parseCSVLine(lines[0]).map(h => h.trim().toLowerCase());
     const ci = name => header.indexOf(name.toLowerCase());
@@ -287,6 +287,10 @@ function loadPricingCsv(csvPath) {
     }
     return map.size ? map : null;
   } catch { return null; }
+}
+
+function loadPricingCsv(csvPath) {
+  try { return parsePricingCsvFromText(fs.readFileSync(csvPath, 'utf8')); } catch { return null; }
 }
 
 function lookupPricingFromMap(model, pricingData) {
@@ -528,5 +532,6 @@ module.exports = {
   fmt,
   report,
   csvReport,
+  parsePricingCsvFromText,
   loadPricingCsv,
 };
