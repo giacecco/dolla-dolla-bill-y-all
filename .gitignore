@@ -16,3 +16,9 @@ venv/
 desktop/macos/dist/
 desktop/windows/dist/
 desktop/node_modules/
+
+# Local environment
+.envrc
+
+# Stray bundles
+index.js
