@@ -1,5 +1,9 @@
 # CLAUDE.md
 
+## Working conventions
+
+- **Never commit or push unless explicitly asked.** Only run `git commit` or `git push` when the user says to. Do not commit or push as part of completing a task, after a build, or at any other time unless directly instructed.
+
 ## Project
 
 A Node.js reverse proxy that wraps Claude Code to intercept and log API token usage. CLI: `ddbya`. Reporting script: `ddbya-report`. Desktop tray app (Electron): `desktop/`.
