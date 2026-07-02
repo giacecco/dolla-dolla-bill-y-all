@@ -247,21 +247,31 @@ async function launchClaudeDesktop(port) {
   spawn(claudePath, [], { detached: true, stdio: 'ignore', env }).unref();
 }
 
-// ── Report export ─────────────────────────────────────────────────────────────
+// ── Report core (shared with ddbya-report) ────────────────────────────────────
 
-function exportCsvReport(from, to) {
+function reportCore() {
   const corePath = app.isPackaged
     ? path.join(process.resourcesPath, 'report-core.js')
     : path.join(__dirname, '..', 'report-core.js');
+  return require(corePath);
+}
 
+// ── Report export ─────────────────────────────────────────────────────────────
+
+function exportCsvReport(from, to) {
   let core;
-  try { core = require(corePath); } catch (err) {
+  try { core = reportCore(); } catch (err) {
     return { ok: false, error: `Could not load report-core.js: ${err.message}` };
   }
 
   const root = path.join(APP_SUPPORT, 'Claude Desktop');
-  const fromDate = from ? new Date(from + 'T00:00:00Z') : null;
-  let toDate = to ? new Date(new Date(to + 'T00:00:00Z').getTime() + 86400000) : null;
+  // Dates from the picker are local calendar days — use local midnight boundaries
+  const localMidnight = (ymd, plusDays) => {
+    const [y, m, d] = ymd.split('-').map(Number);
+    return new Date(y, m - 1, d + (plusDays || 0));
+  };
+  const fromDate = from ? localMidnight(from) : null;
+  let toDate = to ? localMidnight(to, 1) : null;
   if (fromDate && !toDate) toDate = new Date();
 
   try {
@@ -329,67 +339,17 @@ function openSettingsWindow() {
 
 let pricingData = null; // Map<lowerModelName, {inputPerMtok, outputPerMtok, cacheReadPerMtok, cacheWritePerMtok}>
 
-function parseCSVLine(line) {
-  const cols = [];
-  let cur = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') { inQuotes = !inQuotes; continue; }
-    if (ch === ',' && !inQuotes) { cols.push(cur); cur = ''; continue; }
-    cur += ch;
-  }
-  cols.push(cur);
-  return cols;
-}
-
 function parsePricingCsvFromText(text) {
-  try {
-    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-    if (lines.length < 2) return null;
-    const header = parseCSVLine(lines[0]).map(h => h.trim().toLowerCase());
-    const ci = name => header.indexOf(name.toLowerCase());
-    const iName = ci('name');
-    const iIn   = ci('input price per 1m tokens');
-    const iOut  = ci('output price per 1m tokens');
-    const iCR   = ci('cache read per 1m tokens');
-    const iCW   = ci('cache write per 1m tokens');
-    if (iName === -1 || iIn === -1 || iOut === -1) return null;
-    const parseNum = (cols, i) => { if (i === -1) return 0; const v = (cols[i] || '').trim().replace(/[$,\s]/g, ''); return (v === '-' || !v || v === 'n/a') ? 0 : (parseFloat(v) || 0); };
-    const map = new Map();
-    for (const line of lines.slice(1)) {
-      const cols = parseCSVLine(line);
-      const name = (cols[iName] || '').trim().toLowerCase();
-      if (!name) continue;
-      map.set(name, { inputPerMtok: parseNum(cols, iIn), outputPerMtok: parseNum(cols, iOut), cacheReadPerMtok: parseNum(cols, iCR), cacheWritePerMtok: parseNum(cols, iCW) });
-    }
-    return map.size ? map : null;
-  } catch { return null; }
+  try { return reportCore().parsePricingCsvFromText(text); } catch { return null; }
 }
 
 function loadPricingCsv(csvPath) {
   try { return parsePricingCsvFromText(fs.readFileSync(csvPath, 'utf8')); } catch { return null; }
 }
 
-function lookupPricing(model) {
-  if (!pricingData || !model) return null;
-  const m = model.toLowerCase();
-  // 1. Exact match
-  if (pricingData.has(m)) return pricingData.get(m);
-  // 2. Strip provider prefix from model (e.g. "anthropic.claude-..." → "claude-...")
-  const dot = m.indexOf('.');
-  if (dot !== -1 && pricingData.has(m.slice(dot + 1))) return pricingData.get(m.slice(dot + 1));
-  // 3. Strip provider prefix from CSV key, then check if one is a prefix of the other.
-  //    Handles e.g. "claude-haiku-4-5-20251001" matching "anthropic.claude-haiku-4-5-20251001-v1:0"
-  for (const [key, val] of pricingData) {
-    const base = key.includes('.') ? key.slice(key.indexOf('.') + 1) : key;
-    if (base.startsWith(m) || m.startsWith(base)) return val;
-  }
-  return null;
-}
-
 function computeCost(info) {
-  const p = lookupPricing(info.model);
+  let p = null;
+  try { p = reportCore().lookupPricingFromMap(info.model, pricingData); } catch {}
   if (!p) return null;
   return (info.input * p.inputPerMtok + info.output * p.outputPerMtok +
           info.cacheRead * p.cacheReadPerMtok + info.cacheCreate * p.cacheWritePerMtok) / 1_000_000;
@@ -418,6 +378,129 @@ function formatCost(cost) {
   return `$${cost.toFixed(2)}`;
 }
 
+// ── Tray icon label (Windows/Linux) ───────────────────────────────────────────
+// tray.setTitle() is macOS-only; on Windows/Linux the counter is drawn into the
+// icon bitmap itself. 3×5 pixel font, white with a 1px black outline so it is
+// legible on both light and dark taskbars. Regeneration is throttled to 1/s.
+
+const TRAY_FONT = {
+  '0': ['111', '101', '101', '101', '111'],
+  '1': ['010', '110', '010', '010', '111'],
+  '2': ['111', '001', '111', '100', '111'],
+  '3': ['111', '001', '011', '001', '111'],
+  '4': ['101', '101', '111', '001', '001'],
+  '5': ['111', '100', '111', '001', '111'],
+  '6': ['111', '100', '111', '101', '111'],
+  '7': ['111', '001', '001', '010', '010'],
+  '8': ['111', '101', '111', '101', '111'],
+  '9': ['111', '101', '111', '001', '111'],
+  '.': ['0', '0', '0', '0', '1'],
+  '!': ['1', '1', '1', '0', '1'],
+  'K': ['101', '110', '100', '110', '101'],
+  'M': ['101', '111', '111', '101', '101'],
+};
+
+function renderLabelIcon(label) {
+  const glyphs = [...label].map(c => TRAY_FONT[c]);
+  if (!glyphs.length || glyphs.some(g => !g)) return null;
+  const textW = glyphs.reduce((s, g) => s + g[0].length, 0) + glyphs.length - 1;
+  if (textW > 16) return null;
+
+  const grid = Array.from({ length: 16 }, () => new Array(16).fill(false));
+  let x = Math.floor((16 - textW) / 2);
+  const y0 = 5;
+  for (const g of glyphs) {
+    const w = g[0].length;
+    for (let r = 0; r < 5; r++) {
+      for (let c = 0; c < w; c++) if (g[r][c] === '1') grid[y0 + r][x + c] = true;
+    }
+    x += w + 1;
+  }
+
+  const isText = (gx, gy) => gx >= 0 && gy >= 0 && gx < 16 && gy < 16 && grid[gy][gx];
+  const isOutline = (gx, gy) => {
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) if (isText(gx + dx, gy + dy)) return true;
+    }
+    return false;
+  };
+
+  const img = nativeImage.createEmpty();
+  for (const scale of [1, 2]) {
+    const size = 16 * scale;
+    const buf = Buffer.alloc(size * size * 4); // transparent
+    for (let py = 0; py < size; py++) {
+      for (let px = 0; px < size; px++) {
+        const gx = Math.floor(px / scale), gy = Math.floor(py / scale);
+        let v = null; // greyscale, so BGRA/RGBA order is irrelevant
+        if (isText(gx, gy)) v = 255;
+        else if (isOutline(gx, gy)) v = 0;
+        if (v !== null) {
+          const i = (py * size + px) * 4;
+          buf[i] = buf[i + 1] = buf[i + 2] = v;
+          buf[i + 3] = 255;
+        }
+      }
+    }
+    img.addRepresentation({ scaleFactor: scale, width: size, height: size, buffer: buf });
+  }
+  return img;
+}
+
+// Short labels that fit 16px: at most 4 glyphs (plus a leading narrow '!').
+function shortScaled(n, div, suffix) {
+  let s = (n / div).toFixed(1);
+  if (s.length > 3) s = String(Math.round(n / div));
+  return s + suffix;
+}
+
+function formatTokensShort(n) {
+  if (n <= 0) return '';
+  if (n < 1000) return String(n);
+  if (n < 999500) return shortScaled(n, 1000, 'K');
+  if (n < 999500000) return shortScaled(n, 1_000_000, 'M');
+  return '999M';
+}
+
+function formatCostShort(c) {
+  if (c < 9.995) return c.toFixed(2);
+  if (c < 99.95) return c.toFixed(1);
+  if (c < 999.5) return String(Math.round(c));
+  return formatTokensShort(Math.round(c));
+}
+
+let baseTrayIcon = null;
+let trayLabelLast = null;
+let trayLabelTimer = null;
+let trayLabelLastAt = 0;
+
+function applyTrayIconLabel() {
+  if (!tray) return;
+  const useCost = pricingData !== null;
+  const label = useCost
+    ? (lastCallUnpriced ? '!' : '') + formatCostShort(sessionCostTotal)
+    : formatTokensShort(Math.round(sessionTokenTotal));
+  if (label === trayLabelLast) return;
+  const img = label ? renderLabelIcon(label) : null;
+  tray.setImage(img || baseTrayIcon || nativeImage.createEmpty());
+  trayLabelLast = label;
+}
+
+function scheduleTrayIconLabel() {
+  const since = Date.now() - trayLabelLastAt;
+  if (since >= 1000) {
+    trayLabelLastAt = Date.now();
+    applyTrayIconLabel();
+    return;
+  }
+  if (trayLabelTimer) return;
+  trayLabelTimer = setTimeout(() => {
+    trayLabelTimer = null;
+    trayLabelLastAt = Date.now();
+    applyTrayIconLabel();
+  }, 1000 - since);
+}
+
 function applyTrayTitle() {
   if (!tray) return;
   const useCost = pricingData !== null;
@@ -429,6 +512,7 @@ function applyTrayTitle() {
     label = formatTokens(Math.round(displayedTokens));
   }
   if (isMac) tray.setTitle(label ? ` ${label}` : '', { fontType: 'monospacedDigit' });
+  else scheduleTrayIconLabel();
   let tip = `ddbya Desktop — port ${currentPort}`;
   if (useCost) {
     const tokStr = formatTokens(Math.round(sessionTokenTotal));
@@ -610,6 +694,7 @@ ipcMain.handle('open-pricing-dialog', async () => {
         cacheCreate: entry.cache_creation_input_tokens || 0,
       });
       if (cost !== null) sessionCostTotal += cost;
+      lastCallUnpriced = cost === null;
     }
   }
   displayedCost = sessionCostTotal;
@@ -735,6 +820,7 @@ app.whenReady().then(async () => {
   const trayIconPath = path.join(__dirname, 'assets', 'TrayIconTemplate.png');
   let icon = nativeImage.createFromPath(trayIconPath);
   if (icon.isEmpty()) icon = nativeImage.createEmpty();
+  baseTrayIcon = icon;
 
   tray = new Tray(icon);
   tray.setToolTip(`ddbya Desktop — port ${currentPort}`);
@@ -743,8 +829,10 @@ app.whenReady().then(async () => {
 });
 
 app.on('second-instance', () => {
-  // A second launch was attempted — just bring the existing instance to front
-  if (tagsWin && !tagsWin.isDestroyed()) tagsWin.focus();
+  // A second launch was attempted — bring whichever window is open to front
+  for (const win of [settingsWin, tagsWin, reportWin]) {
+    if (win && !win.isDestroyed()) { win.focus(); return; }
+  }
 });
 
 // Don't quit when all renderer windows close — we're a tray-only app.

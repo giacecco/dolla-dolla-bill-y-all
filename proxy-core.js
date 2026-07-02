@@ -233,8 +233,12 @@ function buildProxy(upstream, logger, tagsGetter, optsRef, onTokens) {
       for (const [k, v] of Object.entries(req.headers)) {
         const low = k.toLowerCase();
         if (['host', 'connection', 'proxy-connection'].includes(low)) continue;
+        // Token extraction only understands gzip — never let the client
+        // negotiate br/zstd, which would relay fine but log nothing.
+        if (low === 'accept-encoding') continue;
         upHeaders[k] = v;
       }
+      upHeaders['accept-encoding'] = 'gzip';
 
       let forwardUrl = req.url;
       if (optsRef.disableBeta) {
@@ -311,6 +315,7 @@ function buildProxy(upstream, logger, tagsGetter, optsRef, onTokens) {
         }
       });
 
+      upReq.on('timeout', () => upReq.destroy(new Error('upstream request timed out')));
       upReq.on('error', err => {
         try { res.writeHead(502); res.end(`Bad Gateway: ${err.message}`); } catch {}
       });

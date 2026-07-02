@@ -15,6 +15,12 @@
  * Zero npm dependencies — Node.js built-ins only.
  */
 
+// Exit quietly when stdout is closed early (e.g. piped into head or a pager)
+process.stdout.on('error', err => {
+  if (err.code === 'EPIPE') process.exit(0);
+  throw err;
+});
+
 const path = require('path');
 const {
   CLAUDE_DESKTOP_PROJECT,
@@ -24,6 +30,7 @@ const {
   report,
   csvReport,
   loadPricingCsv,
+  computeRowCost,
 } = require(path.join(__dirname, 'report-core.js'));
 
 const HELP = `\
@@ -56,6 +63,9 @@ Retagging (modifies files in-place; cannot combine with --json/--csv):
   -t +tagname           Add "tagname" to every matching entry.
   -t -tagname           Remove "tagname" from every matching entry.
   -t -/regex/           Remove tags matching regex from every matching entry.
+  --claude-desktop      Also retag Claude Desktop log files. Without this flag,
+                        retagging only touches files under ROOT_FOLDER (reports
+                        always include Claude Desktop regardless).
 
   Example: ddbya-report . -t foobar -t +hello
            Adds "hello" to every entry that already has tag "foobar".
@@ -93,29 +103,39 @@ function parseArgs() {
     json: false,
     csv: false,
     dollarsPath: null,
+    claudeDesktop: false,
   };
+
+  const VALUE_FLAGS = ['--last', '--from', '--to', '-t', '--tag', '--model', '--dollars'];
+  function requireValue(i) {
+    if (i + 1 >= args.length) {
+      process.stderr.write(`error: ${args[i]} requires a value\n`);
+      process.exit(1);
+    }
+  }
 
   let i = 1;
   while (i < args.length) {
     const arg = args[i];
+    if (VALUE_FLAGS.includes(arg)) requireValue(i);
     if (arg === '-h' || arg === '--help') {
       process.stdout.write(HELP + '\n');
       process.exit(0);
-    } else if (arg === '--last' && i + 1 < args.length) {
+    } else if (arg === '--last') {
       const n = parseInt(args[++i], 10);
       if (isNaN(n)) { process.stderr.write(`Invalid --last value: ${args[i]}\n`); process.exit(1); }
       params.last = n; i++;
-    } else if (arg === '--from' && i + 1 < args.length) {
+    } else if (arg === '--from') {
       const val = args[++i];
       if (!/^\d{4}-\d{2}-\d{2}$/.test(val)) { process.stderr.write(`Invalid --from date (expected YYYY-MM-DD): ${val}\n`); process.exit(1); }
       params.from = val; i++;
-    } else if (arg === '--to' && i + 1 < args.length) {
+    } else if (arg === '--to') {
       const val = args[++i];
       if (!/^\d{4}-\d{2}-\d{2}$/.test(val)) { process.stderr.write(`Invalid --to date (expected YYYY-MM-DD): ${val}\n`); process.exit(1); }
       params.to = val; i++;
     } else if (arg === '--today') {
       params.today = true; i++;
-    } else if ((arg === '-t' || arg === '--tag') && i + 1 < args.length) {
+    } else if (arg === '-t' || arg === '--tag') {
       const val = args[++i];
       const isRegex = val.startsWith('/') && val.endsWith('/') && val.length > 2;
       if (!isRegex && val.startsWith('+')) {
@@ -130,14 +150,16 @@ function parseArgs() {
         params.tags.push(val);
       }
       i++;
-    } else if (arg === '--model' && i + 1 < args.length) {
+    } else if (arg === '--model') {
       params.models.push(args[++i]); i++;
     } else if (arg === '--json') {
       params.json = true; i++;
     } else if (arg === '--csv') {
       params.csv = true; i++;
-    } else if (arg === '--dollars' && i + 1 < args.length) {
+    } else if (arg === '--dollars') {
       params.dollarsPath = args[++i]; i++;
+    } else if (arg === '--claude-desktop') {
+      params.claudeDesktop = true; i++;
     } else {
       process.stderr.write(`Unknown argument: ${arg}\n`); process.exit(1);
     }
@@ -155,29 +177,39 @@ function parseArgs() {
   if ((params.addTags.length || params.removeTags.length) && (params.json || params.csv)) {
     process.stderr.write('error: retagging (-t +/-) cannot be combined with --json or --csv\n'); process.exit(1);
   }
+  if (params.claudeDesktop && !params.addTags.length && !params.removeTags.length) {
+    process.stderr.write('error: --claude-desktop only applies to retagging (reports always include Claude Desktop)\n'); process.exit(1);
+  }
 
   return params;
 }
 
 // ── Time window ───────────────────────────────────────────────────────────────
 
+// Dates given by the user are interpreted as local calendar days (local
+// midnight boundaries); log timestamps are stored in UTC but compared as
+// absolute instants, so this needs no data conversion.
+function localMidnight(ymd, plusDays) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(y, m - 1, d + (plusDays || 0));
+}
+
 function resolveWindow(params) {
   const now = new Date();
 
   if (params.today) {
-    const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    return { fromDate: today, toDate: new Date(today.getTime() + 86400000) };
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    return { fromDate: today, toDate: new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1) };
   }
 
   let toDate = null;
   if (params.to) {
-    toDate = new Date(params.to + 'T00:00:00Z');
-    toDate.setUTCDate(toDate.getUTCDate() + 1); // exclusive upper bound
+    toDate = localMidnight(params.to, 1); // exclusive upper bound
   }
 
   let fromDate = null;
   if (params.from) {
-    fromDate = new Date(params.from + 'T00:00:00Z');
+    fromDate = localMidnight(params.from);
     if (!toDate) toDate = now;
   } else if (params.last !== null) {
     fromDate = new Date(now.getTime() - params.last * 86400000);
@@ -187,6 +219,10 @@ function resolveWindow(params) {
   return { fromDate, toDate };
 }
 
+function localDateStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 function main() {
@@ -194,9 +230,13 @@ function main() {
   const { fromDate, toDate } = resolveWindow(params);
 
   if (params.addTags.length || params.removeTags.length) {
-    const { modifiedEntries, modifiedFiles } = retag(
-      params.root, fromDate, toDate, params.tags, params.addTags, params.removeTags,
+    const { modifiedEntries, modifiedFiles, files } = retag(
+      params.root, fromDate, toDate, params.tags, params.addTags, params.removeTags, params.claudeDesktop,
     );
+    for (const f of files) {
+      const n = f.entries === 1 ? 'entry' : 'entries';
+      process.stdout.write(`  ${f.path}: ${f.entries} ${n}\n`);
+    }
     const noun = modifiedEntries === 1 ? 'entry' : 'entries';
     process.stdout.write(`Retagged ${modifiedEntries} ${noun} across ${modifiedFiles} file(s).\n`);
     return;
@@ -216,9 +256,14 @@ function main() {
 
   if (params.json) {
     const output = {
-      from: fromDate ? fromDate.toISOString().slice(0, 10) : null,
-      to: params.to ? new Date(toDate.getTime() - 86400000).toISOString().slice(0, 10) : null,
-      rows,
+      from: fromDate ? localDateStr(fromDate) : null,
+      to: toDate ? localDateStr(new Date(toDate.getTime() - 1)) : null,
+      rows: pricingData
+        ? rows.map(r => {
+            const cost = computeRowCost(r, pricingData);
+            return { ...r, cost_usd: cost !== null ? +cost.toFixed(6) : null };
+          })
+        : rows,
     };
     process.stdout.write(JSON.stringify(output) + '\n');
   } else if (params.csv) {

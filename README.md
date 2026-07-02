@@ -18,7 +18,7 @@ See [INSTALL.md](INSTALL.md).
 ```sh
 ddbya                        # interactive session, uses env ANTHROPIC_BASE_URL
 ddbya --model sonnet         # any claude flags are forwarded
-ddbya --help                 # show ddbya-specific options
+ddbya --ddbya-help           # show ddbya-specific options (-h/--help goes to claude)
 
 # Tags — label consumption for cross-project tracking
 ddbya -t "reviewing PR #123"
@@ -108,9 +108,8 @@ ddbya-report --help
 ddbya-report /path/to/projects [--last N] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-t <tag> ...] [--json | --csv]
 ```
 
-If the given folder directly contains a `.ddbya.d/` with usage files, it reports on that project only. Otherwise it recursively scans all subdirectories for `.ddbya.d/usage-*.ddbya` files. Groups usage by top-level subfolder and tags. Includes all data by default — pass `--last`, `--from`, or `--to` to filter by date. `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic). Tags wrapped in `/ /` are treated as regex. `--json` outputs compact JSON. `--csv` outputs CSV. Zero dependencies — Node.js built-in modules only.
+If the given folder directly contains a `.ddbya.d/` with usage files, it reports on that project only. Otherwise it recursively scans all subdirectories for `.ddbya.d/usage-*.ddbya` files. Groups usage by top-level subfolder and tags. Includes all data by default — pass `--last`, `--from`, or `--to` to filter by date (dates are your local calendar days). `-t`/`--tag` filters entries by tag; can be given multiple times (AND logic). Tags wrapped in `/ /` are treated as regex. `--json` outputs compact JSON. `--csv` outputs CSV. Zero dependencies — Node.js built-in modules only.
 
-A spinner is shown on stderr while data is being read.
 
 Example — last 7 days including Claude Desktop:
 
@@ -138,7 +137,7 @@ ddbya-report . -t foobar -t +hello    # add "hello" to entries tagged "foobar"
 ddbya-report . -t /^client/ -t -old   # remove "old" from entries with a "client-*" tag
 ```
 
-Retagging also operates on Claude Desktop log entries.
+Retagging only touches files under the given folder. Pass `--claude-desktop` to also retag Claude Desktop log entries (reports always include them regardless). Modified files are listed in the output.
 
 ## Shell autocompletion
 

@@ -27,10 +27,10 @@ All components — `ddbya`, `ddbya-report`, and `desktop/` — must work correct
 
 ### ddbya (CLI wrapper)
 
-- `parseArgs(argv)` — extracts `-t`/`--tag`, `--list-tags`, and `-h`/`--help` from argv. Merges `DDBYA_TAGS` env var (comma-separated) with `-t` flags.
-- `collectTags(projectDir)` — scans `.ddbya.d/usage-*.ddbya` in the current project and sibling directories, **plus the Claude Desktop log root**, returning all unique tags sorted. Used by `--list-tags` for shell tab completion.
+- `parseArgs(argv)` — extracts `-t`/`--tag`, `--list-tags`, and `--ddbya-help` from argv (`-h`/`--help` is forwarded to `claude` like any other argument). A `--` stops option parsing: everything after it is forwarded to `claude` verbatim. Merges `DDBYA_TAGS` env var (comma-separated) with `-t` flags.
+- `collectTags(projectDir)` — scans `.ddbya.d/usage-*.ddbya` in the current project and sibling directories (one level above the topmost project, unless that is the home directory or filesystem root; `node_modules` and hidden directories are skipped), **plus the Claude Desktop log root**, returning all unique tags sorted. Used by `--list-tags` for shell tab completion.
 - `migrateLegacyLayout(projectDir, identity, sessionId)` — idempotent startup migration. Moves `.token-usage.ddbya` → `.ddbya.d/usage-<identity>-<session>.ddbya` if the legacy file exists.
-- `main()` — parses args, resolves identity, runs migration, starts proxy on a random port, spawns `claude` with `ANTHROPIC_BASE_URL` pointing at the proxy, prints session summary to stderr on exit.
+- `main()` — parses args, resolves identity, runs migration, starts proxy on a random port, spawns `claude` with `ANTHROPIC_BASE_URL` pointing at the proxy, prints session summary to stderr on exit. On Windows, if `claude` resolves to a `.cmd`/`.bat` shim (npm install), it is spawned via `cmd.exe` with cross-spawn-style escaping, since Node refuses to execute those directly.
 
 ### report-core.js
 
@@ -38,10 +38,11 @@ All components — `ddbya`, `ddbya-report`, and `desktop/` — must work correct
 - `aggregate(entries)` — groups by `(project, model, tags)` and sums token counts.
 - `report(rows, fromDate, toDate)` — prints a formatted table to stdout.
 - `csvReport(rows)` — returns a CSV string.
-- `retag(root, fromDate, toDate, tagFilters, addTags, removeTags)` — modifies tags in `.ddbya.d/usage-*.ddbya` files in-place (atomic write via temp file + rename).
+- `retag(root, fromDate, toDate, tagFilters, addTags, removeTags, includeClaudeDesktop)` — modifies tags in `.ddbya.d/usage-*.ddbya` files in-place (atomic write via temp file + rename). Claude Desktop logs are only touched when `includeClaudeDesktop` is true.
 
 ## Token extraction
 
+- The proxy forces `accept-encoding: gzip` on forwarded requests so responses are only ever gzip or identity — token extraction does not understand br/zstd.
 - Non-streaming: reads full response JSON, decompresses if gzipped, extracts `usage.input_tokens`, `usage.output_tokens`, `usage.cache_read_input_tokens`, `usage.cache_creation_input_tokens`, and `model`.
 - Streaming (SSE): incrementally decompresses gzip and parses events line-by-line as chunks arrive (no full-body buffer). Scans `message_start` (Anthropic input + cache fields at `message.usage.*`, model at `message.model`), `message_delta` (output tokens), and `message_stop` (fallback for tokens and model). Model is taken from the response, not the request, so aliased model names resolve to their actual deployed model.
 - A `"tags"` list is written into every entry when `-t`/`--tag` is given at launch (can be given multiple times). Tags associate consumption with a purpose independently of the project folder.
@@ -82,7 +83,7 @@ ddbya-report --help   (no folder required)
 - **Claude Desktop logs** (`~/Library/Application Support/ddbya/Claude Desktop/.ddbya.d/` on macOS; `%APPDATA%\ddbya\Claude Desktop\.ddbya.d\` on Windows) are always included as project `*Claude Desktop*`, unless they are already within the specified root (to avoid double-counting). `*Claude Desktop*` does not get a `(subtotal)` row in tabular output.
 - Project name = top-level subfolder under the given root that contains the `.ddbya.d/` directory (first path component after root). If the directory is directly in root, uses root's directory name.
 - Aggregates by project, model, and tags (across all per-user files in the same project). A Model column appears whenever any entry has a model field; a Tags column appears whenever any entry has tags.
-- Includes all data by default. Pass `--last`, `--from`, `--to`, or `--today` to filter by date. `--today` is shorthand for `--from <today> --to <today>` and is mutually exclusive with `--last`, `--from`, and `--to`.
+- Includes all data by default. Pass `--last`, `--from`, `--to`, or `--today` to filter by date. Dates are interpreted as **local** calendar days (local midnight boundaries) even though log timestamps are stored in UTC. `--today` is shorthand for `--from <today> --to <today>` and is mutually exclusive with `--last`, `--from`, and `--to`.
 - `--from`/`--to` can be used together or individually; `--from` without `--to` means "from that date to now".
 - `-t`/`--tag` filters to entries containing that tag. Can be given multiple times (AND logic — an entry must match all filters). Tags wrapped in `/ /` are treated as regex; otherwise literal exact match. Example: `ddbya-report . -t /^Steve/ -t "code review"` matches entries whose tags include one starting with "Steve" AND one exactly "code review".
 - `--model` filters to entries whose model field matches the given value. Can be given multiple times (OR logic — entry matches if its model matches any filter). Supports `/ /` regex syntax. Example: `ddbya-report . --model /sonnet/ --model /opus/` matches entries from any Sonnet or Opus model.
@@ -90,10 +91,8 @@ ddbya-report --help   (no folder required)
   - `-t +tagname` adds "tagname" to all matching entries.
   - `-t -tagname` removes "tagname" from all matching entries. Wrap in `/ /` for regex: `-t -/^Steve/`.
   - Retagging modifies `.ddbya.d/usage-*.ddbya` files in-place. Cannot be combined with `--json`/`--csv`.
-  - Retagging also operates on Claude Desktop log files.
+  - Retagging only touches files under ROOT_FOLDER; pass `--claude-desktop` to also retag Claude Desktop log files. Modified files are listed on stdout.
   - Example: `ddbya-report . -t foobar -t +hello` adds "hello" to every entry that has tag "foobar".
-- A spinner is shown on stderr while data is being read (only when stderr is a TTY).
-- Zero dependencies — Python 3 standard library only.
 
 ## Building and running
 
@@ -106,7 +105,7 @@ ddbya-report --help   (no folder required)
 
 ### What it does
 
-- Sits in the macOS menu bar (or Windows system tray) as a small icon (Claude asterisk + $ sign).
+- Sits in the macOS menu bar (or Windows/Linux system tray) as a small icon (Claude asterisk + $ sign). On macOS the session token count (or cost) is shown as text next to the icon via `tray.setTitle` (macOS-only API). On Windows/Linux the counter is drawn into the icon bitmap itself (3×5 pixel font, white with black outline, `!` prefix instead of ⚠), throttled to at most one icon regeneration per second; the plain icon returns when there is nothing to show.
 - Starts a local reverse proxy on a persistent port (default 18723, stored in `~/Library/Application Support/ddbya/state.json`).
 - Registers the proxy URL with the OS (`launchctl setenv ANTHROPIC_BASE_URL` on macOS; Windows registry on Windows) so that Claude Desktop picks it up on next launch.
 - If the persistent port is already in use at startup, picks a random free port and shows a persistent warning dialog asking the user to restart Claude Desktop.
@@ -203,7 +202,7 @@ Linux signing is not configured. AppImages can be signed with `gpg` but this is 
 
 ## Maintenance
 
-- When a new Claude Code version is released, verify that none of ddbya's own short flags (`-t`) or long flags (`--tag`, `--list-tags`, `--help`) conflict with new flags introduced by Claude Code itself. A conflict would shadow or consume a flag meant for the wrapped `claude` process.
+- When a new Claude Code version is released, verify that none of ddbya's own short flags (`-t`) or long flags (`--tag`, `--list-tags`, `--ddbya-help`) conflict with new flags introduced by Claude Code itself. A conflict would shadow or consume a flag meant for the wrapped `claude` process. Users can always work around a conflict with `--`.
 - When the Electron app's proxy port changes (because the default port is in use), the user must restart Claude Desktop to pick up the new URL. The app shows a warning dialog when this happens.
 
 ## Secret features
@@ -211,7 +210,7 @@ Linux signing is not configured. AppImages can be signed with `gpg` but this is 
 Some features are intentionally hidden from users who don't know to look for them. Do not document them in README files, user-facing help text, or `--help` output.
 
 - **`ddbya-report --dollars <csv-path>`** — adds a Cost (USD) column to reports by loading a pricing CSV. The `--dollars` flag must not appear in the `--help` output or any documentation.
-- **ddbya Desktop cost display** — in the Settings window, clicking the "Settings" heading 5 times reveals a hidden section to load a pricing CSV. The tray then shows estimated cost (e.g. `$0.03`) instead of token counts, with a ⚠ prefix when some models are not in the CSV. This must not be mentioned in the README or any visible UI text.
+- **ddbya Desktop cost display** — in the Settings window, clicking the "Settings" heading 5 times reveals a hidden section to load a pricing CSV. The tray then shows estimated cost (e.g. `$0.03`) instead of token counts, with a ⚠ prefix when some models are not in the CSV (on Windows/Linux the cost is drawn into the icon without the `$`, and the warning prefix is `!`). This must not be mentioned in the README or any visible UI text.
 
 ## Conventions
 

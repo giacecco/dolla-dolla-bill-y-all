@@ -153,7 +153,7 @@ function collectEntries(root, fromDate, toDate, tagFilters, modelFilters) {
       project = CLAUDE_DESKTOP_PROJECT;
       cdIncluded = true;
     } else if (projectDir === root || path.resolve(projectDir) === path.resolve(root)) {
-      project = path.basename(root) || path.basename(path.resolve(root));
+      project = path.basename(path.resolve(root)) || path.resolve(root);
     } else {
       const rel = path.relative(root, projectDir);
       project = rel.split(path.sep)[0];
@@ -174,21 +174,26 @@ function collectEntries(root, fromDate, toDate, tagFilters, modelFilters) {
 
 /**
  * Modify tags in .ddbya.d/usage-*.ddbya files in-place.
- * Returns { modifiedEntries, modifiedFiles }.
+ * Only touches files under root; pass includeClaudeDesktop to also retag the
+ * Claude Desktop logs (they are never touched implicitly, unlike reporting).
+ * Returns { modifiedEntries, modifiedFiles, files: [{ path, entries }] }.
  */
-function retag(root, fromDate, toDate, tagFilters, addTags, removeTags) {
+function retag(root, fromDate, toDate, tagFilters, addTags, removeTags, includeClaudeDesktop) {
   const paths = discoverUsagePaths(root).map(({ jsonlPath }) => jsonlPath);
 
-  // Include Claude Desktop paths unless already under root
-  const rootResolved = path.resolve(root);
-  for (const { jsonlPath } of discoverClaudeDesktopPaths()) {
-    if (!path.resolve(jsonlPath).startsWith(rootResolved + path.sep)) {
-      paths.push(jsonlPath);
+  if (includeClaudeDesktop) {
+    // Include Claude Desktop paths unless already under root
+    const rootResolved = path.resolve(root);
+    for (const { jsonlPath } of discoverClaudeDesktopPaths()) {
+      if (!path.resolve(jsonlPath).startsWith(rootResolved + path.sep)) {
+        paths.push(jsonlPath);
+      }
     }
   }
 
   let totalModified = 0;
   let filesModified = 0;
+  const files = [];
 
   for (const jsonlPath of paths) {
     let rawLines;
@@ -198,6 +203,7 @@ function retag(root, fromDate, toDate, tagFilters, addTags, removeTags) {
     }
 
     let fileModified = false;
+    let fileEntries = 0;
     const outLines = [];
 
     for (const raw of rawLines) {
@@ -228,8 +234,9 @@ function retag(root, fromDate, toDate, tagFilters, addTags, removeTags) {
       else delete entry.tags;
 
       const sorted = Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b)));
-      outLines.push(JSON.stringify(sorted) + '\n');
+      outLines.push(JSON.stringify(sorted));
       totalModified++;
+      fileEntries++;
       fileModified = true;
     }
 
@@ -239,6 +246,7 @@ function retag(root, fromDate, toDate, tagFilters, addTags, removeTags) {
         fs.writeFileSync(tmp, outLines.join('\n'));
         fs.renameSync(tmp, jsonlPath);
         filesModified++;
+        files.push({ path: jsonlPath, entries: fileEntries });
       } catch (err) {
         process.stderr.write(`ddbya-report: could not write ${jsonlPath}: ${err.message}\n`);
         try { fs.unlinkSync(tmp); } catch {}
@@ -246,7 +254,7 @@ function retag(root, fromDate, toDate, tagFilters, addTags, removeTags) {
     }
   }
 
-  return { modifiedEntries: totalModified, modifiedFiles: filesModified };
+  return { modifiedEntries: totalModified, modifiedFiles: filesModified, files };
 }
 
 // ── Pricing ───────────────────────────────────────────────────────────────────
@@ -397,7 +405,11 @@ function buildRow(values, byName) {
 
 // ── Table report ──────────────────────────────────────────────────────────────
 
-function dateStr(d) { return d.toISOString().slice(0, 10); }
+// Local calendar date — date filters and headers work in the user's local days,
+// even though log timestamps are stored in UTC.
+function dateStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
 /**
  * Print a formatted token-usage table to process.stdout.
@@ -405,12 +417,13 @@ function dateStr(d) { return d.toISOString().slice(0, 10); }
  */
 function report(rows, fromDate, toDate, pricingData) {
   let header;
-  if (!fromDate) {
+  if (!fromDate && !toDate) {
     header = 'Token Usage Report — all data';
   } else {
-    const toDisplay = new Date(toDate.getTime() - 86400000);
-    const diffDays = (toDisplay - fromDate) / 86400000;
-    if (diffDays < 1) {
+    const toDisplay = new Date(toDate.getTime() - 1); // toDate is an exclusive bound
+    if (!fromDate) {
+      header = `Token Usage Report — up to ${dateStr(toDisplay)}`;
+    } else if (dateStr(fromDate) === dateStr(toDisplay)) {
       header = `Token Usage Report — ${dateStr(fromDate)}`;
     } else {
       header = `Token Usage Report — ${dateStr(fromDate)} to ${dateStr(toDisplay)}`;
@@ -534,4 +547,6 @@ module.exports = {
   csvReport,
   parsePricingCsvFromText,
   loadPricingCsv,
+  lookupPricingFromMap,
+  computeRowCost,
 };

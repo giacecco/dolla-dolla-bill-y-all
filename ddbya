@@ -10,11 +10,17 @@
  *   ddbya -t <tag> [claude args...]
  */
 
+// Exit quietly when stdout is closed early (e.g. --list-tags piped into head)
+process.stdout.on('error', err => {
+  if (err.code === 'EPIPE') process.exit(0);
+  throw err;
+});
+
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const {
   DDBYA_DIR,
   USAGE_FILENAME_PREFIX,
@@ -37,7 +43,10 @@ Options:
                     Also reads DDBYA_TAGS env var (comma-separated); -t appends.
   --list-tags       Print all tags used in this and sibling projects, then exit.
                     Used by shell completions for tab-completing -t values.
-  -h, --help        Show this message and exit.
+  --ddbya-help      Show this message and exit. (-h/--help is forwarded to
+                    claude, like every other unlisted argument.)
+  --                Stop parsing ddbya options; everything after is passed to
+                    claude verbatim (e.g. to forward a literal -t).
 
 Token usage is written to .ddbya.d/usage-<identity>-<session>.ddbya in the
 current directory. A summary is printed to stderr when the session ends.
@@ -57,7 +66,10 @@ function parseArgs(argv) {
   let i = 0;
   while (i < argv.length) {
     const arg = argv[i];
-    if (arg === '-h' || arg === '--help') {
+    if (arg === '--') {
+      claudeArgs.push(...argv.slice(i + 1));
+      break;
+    } else if (arg === '--ddbya-help') {
       showHelp = true; i++;
     } else if (arg === '-t' || arg === '--tag') {
       if (i + 1 >= argv.length) {
@@ -111,6 +123,9 @@ function collectTagsFromDir(rootDir) {
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
+        // Skip heavy directories that never contain a .ddbya.d
+        if (entry.name === 'node_modules') continue;
+        if (entry.name.startsWith('.') && entry.name !== DDBYA_DIR) continue;
         if (entry.name === DDBYA_DIR) {
           let files;
           try { files = fs.readdirSync(full); } catch { continue; }
@@ -131,10 +146,16 @@ function collectTagsFromDir(rootDir) {
 
 function findTagRoot(startDir) {
   let current = path.resolve(startDir);
+  // Climb while the parent is itself a ddbya project (nested project trees)…
   while (true) {
     const parent = path.dirname(current);
     if (parent === current) return current;
-    if (!fs.existsSync(path.join(parent, DDBYA_DIR))) return current;
+    if (!fs.existsSync(path.join(parent, DDBYA_DIR))) {
+      // …then go one more level up so sibling projects are included — unless
+      // that would mean scanning the whole home directory or filesystem root.
+      if (parent === os.homedir() || parent === path.dirname(parent)) return current;
+      return parent;
+    }
     current = parent;
   }
 }
@@ -161,6 +182,41 @@ function migrateLegacyLayout(projectDir, identity, sessionId) {
     fs.renameSync(legacy, target);
     process.stderr.write(`ddbya: migrated .token-usage.ddbya → .ddbya.d/${targetName}\n`);
   }
+}
+
+// ── Spawning claude ───────────────────────────────────────────────────────────
+
+// On Windows, npm installs Claude Code as a claude.cmd shim, which Node refuses
+// to spawn directly (CVE-2024-27980). Route .cmd/.bat through cmd.exe with
+// cross-spawn's escaping rules (cmd.exe parses the line itself, so every arg
+// must be quoted for MSVCRT and then have cmd metacharacters ^-escaped).
+function winEscapeCommand(cmd) {
+  return cmd.replace(/[()\][%!^"`<>&|;, *?]/g, '^$&');
+}
+
+function winEscapeArgument(arg) {
+  let s = String(arg);
+  s = s.replace(/(\\*)"/g, '$1$1\\"');
+  s = s.replace(/(\\*)$/, '$1$1');
+  s = `"${s}"`;
+  return s.replace(/[()\][%!^"`<>&|;, *?]/g, '^$&');
+}
+
+function spawnClaude(claudeArgs, env) {
+  if (process.platform === 'win32') {
+    let resolved = null;
+    try {
+      resolved = execSync('where claude', { timeout: 3000 })
+        .toString().split(/\r?\n/).map(s => s.trim()).filter(Boolean)[0] || null;
+    } catch {}
+    if (resolved && /\.(cmd|bat)$/i.test(resolved)) {
+      const line = [winEscapeCommand(resolved), ...claudeArgs.map(winEscapeArgument)].join(' ');
+      return spawn('cmd.exe', ['/d', '/s', '/c', `"${line}"`], {
+        env, stdio: 'inherit', windowsVerbatimArguments: true,
+      });
+    }
+  }
+  return spawn('claude', claudeArgs, { env, stdio: 'inherit' });
 }
 
 // ── Session summary ───────────────────────────────────────────────────────────
@@ -223,7 +279,7 @@ async function main() {
 
   let child;
   try {
-    child = spawn('claude', claudeArgs, { env, stdio: 'inherit' });
+    child = spawnClaude(claudeArgs, env);
   } catch (err) {
     server.close();
     logger.close();
